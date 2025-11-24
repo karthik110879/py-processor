@@ -7,6 +7,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from services.pdf_service import PDFService
 from utils.response_formatter import success_response, error_response
+from processors import qdrant
 
 logger = logging.getLogger(__name__)
 
@@ -193,3 +194,11 @@ def health_check() -> tuple:
         message="Service is healthy"
     )
 
+
+@pdf_bp.route('/chunks', methods=['GET'])
+def get_stored_chunks():
+    chunks = qdrant.get_all_chunks()
+    return {
+        "total": len(chunks),
+        "chunks": chunks
+    }

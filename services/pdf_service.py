@@ -7,7 +7,8 @@ import tempfile
 import os
 import json
 import base64
-
+import agents.chunking_agent as chunking_agent
+import agents.storing_agent as storing_agent
 try:
     from docling.document_converter import DocumentConverter
     from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -268,7 +269,7 @@ class PDFService:
             # Try to pass pipeline options to convert() if available
             if hasattr(self, '_pipeline_options') and self._pipeline_options:
                 try:
-                    result = self.converter.convert(file_path, pipeline_options=self._pipeline_options)
+                    result = self.converter.convert(file_path)
                 except TypeError:
                     # If convert() doesn't accept pipeline_options, use default
                     result = self.converter.convert(file_path)
@@ -395,7 +396,24 @@ class PDFService:
                 "images": images if images else None,
                 "chunks": chunks if chunks else None
             }
-            
+
+            # ➜ STORE CHUNKS IN CHROMA DB
+            if content:
+                try:
+                    chunked_data = chunking_agent.chunk_text.invoke({"text": content})
+                    print(f"Chunked data: {chunked_data}")
+
+                    stored_count = storing_agent.create_store_agent().invoke({
+                        "payload": {
+                            "chunks": chunked_data
+                        }
+                    })
+                    print(f"Stored {stored_count} chunks into Qdrant DB")
+                    logger.info(f"Stored {stored_count} chunks into Qdrant DB")
+                    result_data["chunks_count"] = stored_count
+                except Exception as e:
+                    logger.error(f"Failed to store chunks in Qdrant DB: {str(e)}")
+                        
             return result_data
             
         except Exception as e:
