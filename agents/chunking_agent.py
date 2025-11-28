@@ -1,5 +1,20 @@
-from langchain.agents import create_agent
-from langchain.tools import tool
+try:
+    from langchain.agents import create_agent
+except ImportError:
+    def create_agent(*args, **kwargs):
+        raise ImportError("langchain is not installed. Please install it with: pip install langchain")
+
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    try:
+        from langchain.tools import tool
+    except ImportError:
+        # Fallback: create a dummy tool decorator
+        def tool(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.agents.structured_output import ToolStrategy
 from typing import List, Optional

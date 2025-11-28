@@ -1,0 +1,2873 @@
+{
+  "nestjs-realworld-example-app": {
+    "src": {
+      "app.controller.ts": {
+        "language": "typescript",
+        "functions": [],
+        "classes": [
+          {
+            "name": "AppController",
+            "methods": [
+              {
+                "name": "root",
+                "docstring": null
+              }
+            ]
+          }
+        ],
+        "imports": [
+          "import { Get, Controller } from '@nestjs/common';"
+        ],
+        "variables": [],
+        "calls": [
+          {
+            "function": "Controller",
+            "arguments": []
+          },
+          {
+            "function": "Get",
+            "arguments": []
+          }
+        ]
+      },
+      "app.module.ts": {
+        "language": "typescript",
+        "functions": [],
+        "classes": [
+          {
+            "name": "ApplicationModule",
+            "methods": [
+              {
+                "name": "constructor",
+                "docstring": null
+              }
+            ]
+          }
+        ],
+        "imports": [
+          "import { Module } from '@nestjs/common';",
+          "import { AppController } from './app.controller';",
+          "import { ArticleModule } from './article/article.module';",
+          "import { UserModule } from './user/user.module';",
+          "import { TypeOrmModule } from '@nestjs/typeorm';",
+          "import { Connection } from 'typeorm';",
+          "import { ProfileModule } from './profile/profile.module';",
+          "import { TagModule } from './tag/tag.module';"
+        ],
+        "variables": [],
+        "calls": [
+          {
+            "function": "Module",
+            "arguments": [
+              "{\n  imports: [\n    TypeOrmModule.forRoot(),\n    ArticleModule,\n    UserModule,\n    ProfileModule,\n    TagModule\n  ],\n  controllers: [\n    AppController\n  ],\n  providers: []\n}"
+            ]
+          },
+          {
+            "function": "TypeOrmModule.forRoot",
+            "arguments": []
+          }
+        ]
+      },
+      "main.ts": {
+        "language": "typescript",
+        "functions": [
+          {
+            "name": "bootstrap",
+            "parameters": "()",
+            "docstring": null
+          }
+        ],
+        "classes": [],
+        "imports": [
+          "import { NestFactory } from '@nestjs/core';",
+          "import { ApplicationModule } from './app.module';",
+          "import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';"
+        ],
+        "variables": [],
+        "calls": [
+          {
+            "function": "NestFactory.create",
+            "arguments": [
+              "ApplicationModule",
+              "appOptions"
+            ]
+          },
+          {
+            "function": "app.setGlobalPrefix",
+            "arguments": [
+              "'api'"
+            ]
+          },
+          {
+            "function": "new DocumentBuilder()\n    .setTitle('NestJS Realworld Example App')\n    .setDescription('The Realworld API description')\n    .setVersion('1.0')\n    .setBasePath('api')\n    .addBearerAuth()\n    .build",
+            "arguments": []
+          },
+          {
+            "function": "new DocumentBuilder()\n    .setTitle('NestJS Realworld Example App')\n    .setDescription('The Realworld API description')\n    .setVersion('1.0')\n    .setBasePath('api')\n    .addBearerAuth",
+            "arguments": []
+          },
+          {
+            "function": "new DocumentBuilder()\n    .setTitle('NestJS Realworld Example App')\n    .setDescription('The Realworld API description')\n    .setVersion('1.0')\n    .setBasePath",
+            "arguments": [
+              "'api'"
+            ]
+          },
+          {
+            "function": "new DocumentBuilder()\n    .setTitle('NestJS Realworld Example App')\n    .setDescription('The Realworld API description')\n    .setVersion",
+            "arguments": [
+              "'1.0'"
+            ]
+          },
+          {
+            "function": "new DocumentBuilder()\n    .setTitle('NestJS Realworld Example App')\n    .setDescription",
+            "arguments": [
+              "'The Realworld API description'"
+            ]
+          },
+          {
+            "function": "new DocumentBuilder()\n    .setTitle",
+            "arguments": [
+              "'NestJS Realworld Example App'"
+            ]
+          },
+          {
+            "function": "SwaggerModule.createDocument",
+            "arguments": [
+              "app",
+              "options"
+            ]
+          },
+          {
+            "function": "SwaggerModule.setup",
+            "arguments": [
+              "'/docs'",
+              "app",
+              "document"
+            ]
+          },
+          {
+            "function": "app.listen",
+            "arguments": [
+              "3000"
+            ]
+          },
+          {
+            "function": "bootstrap",
+            "arguments": []
+          }
+        ]
+      },
+      "article": {
+        "article.controller.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "ArticleController",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "findAll",
+                  "docstring": null
+                },
+                {
+                  "name": "getFeed",
+                  "docstring": null
+                },
+                {
+                  "name": "findOne",
+                  "docstring": null
+                },
+                {
+                  "name": "findComments",
+                  "docstring": null
+                },
+                {
+                  "name": "create",
+                  "docstring": null
+                },
+                {
+                  "name": "update",
+                  "docstring": null
+                },
+                {
+                  "name": "delete",
+                  "docstring": null
+                },
+                {
+                  "name": "createComment",
+                  "docstring": null
+                },
+                {
+                  "name": "deleteComment",
+                  "docstring": null
+                },
+                {
+                  "name": "favorite",
+                  "docstring": null
+                },
+                {
+                  "name": "unFavorite",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import {Get, Post, Body, Put, Delete, Query, Param, Controller} from '@nestjs/common';",
+            "import { Request } from 'express';",
+            "import { ArticleService } from './article.service';",
+            "import { CreateArticleDto, CreateCommentDto } from './dto';",
+            "import { ArticlesRO, ArticleRO } from './article.interface';",
+            "import { CommentsRO } from './article.interface';",
+            "import { User } from '../user/user.decorator';",
+            "import {\n  ApiBearerAuth,\n  ApiResponse,\n  ApiOperation, ApiTags,\n} from '@nestjs/swagger';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "ApiBearerAuth",
+              "arguments": []
+            },
+            {
+              "function": "ApiTags",
+              "arguments": [
+                "'articles'"
+              ]
+            },
+            {
+              "function": "Controller",
+              "arguments": [
+                "'articles'"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Get all articles' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 200, description: 'Return all articles.'}"
+              ]
+            },
+            {
+              "function": "Get",
+              "arguments": []
+            },
+            {
+              "function": "Query",
+              "arguments": []
+            },
+            {
+              "function": "this.articleService.findAll",
+              "arguments": [
+                "query"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Get article feed' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 200, description: 'Return article feed.'}"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 403, description: 'Forbidden.' }"
+              ]
+            },
+            {
+              "function": "Get",
+              "arguments": [
+                "'feed'"
+              ]
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'id'"
+              ]
+            },
+            {
+              "function": "Query",
+              "arguments": []
+            },
+            {
+              "function": "this.articleService.findFeed",
+              "arguments": [
+                "userId",
+                "query"
+              ]
+            },
+            {
+              "function": "Get",
+              "arguments": [
+                "':slug'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": [
+                "'slug'"
+              ]
+            },
+            {
+              "function": "this.articleService.findOne",
+              "arguments": [
+                "{slug}"
+              ]
+            },
+            {
+              "function": "Get",
+              "arguments": [
+                "':slug/comments'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": [
+                "'slug'"
+              ]
+            },
+            {
+              "function": "this.articleService.findComments",
+              "arguments": [
+                "slug"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Create article' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 201, description: 'The article has been successfully created.'}"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 403, description: 'Forbidden.' }"
+              ]
+            },
+            {
+              "function": "Post",
+              "arguments": []
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'id'"
+              ]
+            },
+            {
+              "function": "Body",
+              "arguments": [
+                "'article'"
+              ]
+            },
+            {
+              "function": "this.articleService.create",
+              "arguments": [
+                "userId",
+                "articleData"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Update article' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 201, description: 'The article has been successfully updated.'}"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 403, description: 'Forbidden.' }"
+              ]
+            },
+            {
+              "function": "Put",
+              "arguments": [
+                "':slug'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": []
+            },
+            {
+              "function": "Body",
+              "arguments": [
+                "'article'"
+              ]
+            },
+            {
+              "function": "this.articleService.update",
+              "arguments": [
+                "params.slug",
+                "articleData"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Delete article' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 201, description: 'The article has been successfully deleted.'}"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 403, description: 'Forbidden.' }"
+              ]
+            },
+            {
+              "function": "Delete",
+              "arguments": [
+                "':slug'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": []
+            },
+            {
+              "function": "this.articleService.delete",
+              "arguments": [
+                "params.slug"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Create comment' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 201, description: 'The comment has been successfully created.'}"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 403, description: 'Forbidden.' }"
+              ]
+            },
+            {
+              "function": "Post",
+              "arguments": [
+                "':slug/comments'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": [
+                "'slug'"
+              ]
+            },
+            {
+              "function": "Body",
+              "arguments": [
+                "'comment'"
+              ]
+            },
+            {
+              "function": "this.articleService.addComment",
+              "arguments": [
+                "slug",
+                "commentData"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Delete comment' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 201, description: 'The article has been successfully deleted.'}"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 403, description: 'Forbidden.' }"
+              ]
+            },
+            {
+              "function": "Delete",
+              "arguments": [
+                "':slug/comments/:id'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": []
+            },
+            {
+              "function": "this.articleService.deleteComment",
+              "arguments": [
+                "slug",
+                "id"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Favorite article' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 201, description: 'The article has been successfully favorited.'}"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 403, description: 'Forbidden.' }"
+              ]
+            },
+            {
+              "function": "Post",
+              "arguments": [
+                "':slug/favorite'"
+              ]
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'id'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": [
+                "'slug'"
+              ]
+            },
+            {
+              "function": "this.articleService.favorite",
+              "arguments": [
+                "userId",
+                "slug"
+              ]
+            },
+            {
+              "function": "ApiOperation",
+              "arguments": [
+                "{ summary: 'Unfavorite article' }"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 201, description: 'The article has been successfully unfavorited.'}"
+              ]
+            },
+            {
+              "function": "ApiResponse",
+              "arguments": [
+                "{ status: 403, description: 'Forbidden.' }"
+              ]
+            },
+            {
+              "function": "Delete",
+              "arguments": [
+                "':slug/favorite'"
+              ]
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'id'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": [
+                "'slug'"
+              ]
+            },
+            {
+              "function": "this.articleService.unFavorite",
+              "arguments": [
+                "userId",
+                "slug"
+              ]
+            }
+          ]
+        },
+        "article.entity.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "ArticleEntity",
+              "methods": [
+                {
+                  "name": "updateTimestamp",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { Entity, PrimaryGeneratedColumn, Column, OneToOne, ManyToOne, OneToMany, JoinColumn, AfterUpdate, BeforeUpdate } from 'typeorm';",
+            "import { UserEntity } from '../user/user.entity';",
+            "import { Comment } from './comment.entity';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Entity",
+              "arguments": [
+                "'article'"
+              ]
+            },
+            {
+              "function": "PrimaryGeneratedColumn",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": [
+                "{default: ''}"
+              ]
+            },
+            {
+              "function": "Column",
+              "arguments": [
+                "{default: ''}"
+              ]
+            },
+            {
+              "function": "Column",
+              "arguments": [
+                "{ type: 'timestamp', default: () => \"CURRENT_TIMESTAMP\"}"
+              ]
+            },
+            {
+              "function": "Column",
+              "arguments": [
+                "{ type: 'timestamp', default: () => \"CURRENT_TIMESTAMP\"}"
+              ]
+            },
+            {
+              "function": "BeforeUpdate",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": [
+                "'simple-array'"
+              ]
+            },
+            {
+              "function": "ManyToOne",
+              "arguments": [
+                "type => UserEntity",
+                "user => user.articles"
+              ]
+            },
+            {
+              "function": "OneToMany",
+              "arguments": [
+                "type => Comment",
+                "comment => comment.article",
+                "{eager: true}"
+              ]
+            },
+            {
+              "function": "JoinColumn",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": [
+                "{default: 0}"
+              ]
+            }
+          ]
+        },
+        "article.interface.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [],
+          "imports": [
+            "import { UserData } from '../user/user.interface';",
+            "import { ArticleEntity } from './article.entity';"
+          ],
+          "variables": [],
+          "calls": []
+        },
+        "article.module.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "ArticleModule",
+              "methods": [
+                {
+                  "name": "configure",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';",
+            "import { ArticleController } from './article.controller';",
+            "import { TypeOrmModule } from '@nestjs/typeorm';",
+            "import { ArticleEntity } from './article.entity';",
+            "import { Comment } from './comment.entity';",
+            "import { UserEntity } from '../user/user.entity';",
+            "import { FollowsEntity } from '../profile/follows.entity';",
+            "import { ArticleService } from './article.service';",
+            "import { AuthMiddleware } from '../user/auth.middleware';",
+            "import { UserModule } from '../user/user.module';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Module",
+              "arguments": [
+                "{\n  imports: [TypeOrmModule.forFeature([ArticleEntity, Comment, UserEntity, FollowsEntity]), UserModule],\n  providers: [ArticleService],\n  controllers: [\n    ArticleController\n  ]\n}"
+              ]
+            },
+            {
+              "function": "TypeOrmModule.forFeature",
+              "arguments": [
+                "[ArticleEntity, Comment, UserEntity, FollowsEntity]"
+              ]
+            },
+            {
+              "function": "consumer\n      .apply(AuthMiddleware)\n      .forRoutes",
+              "arguments": [
+                "{path: 'articles/feed', method: RequestMethod.GET}",
+                "{path: 'articles', method: RequestMethod.POST}",
+                "{path: 'articles/:slug', method: RequestMethod.DELETE}",
+                "{path: 'articles/:slug', method: RequestMethod.PUT}",
+                "{path: 'articles/:slug/comments', method: RequestMethod.POST}",
+                "{path: 'articles/:slug/comments/:id', method: RequestMethod.DELETE}",
+                "{path: 'articles/:slug/favorite', method: RequestMethod.POST}",
+                "{path: 'articles/:slug/favorite', method: RequestMethod.DELETE}"
+              ]
+            },
+            {
+              "function": "consumer\n      .apply",
+              "arguments": [
+                "AuthMiddleware"
+              ]
+            }
+          ]
+        },
+        "article.service.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "ArticleService",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "findAll",
+                  "docstring": null
+                },
+                {
+                  "name": "findFeed",
+                  "docstring": null
+                },
+                {
+                  "name": "findOne",
+                  "docstring": null
+                },
+                {
+                  "name": "addComment",
+                  "docstring": null
+                },
+                {
+                  "name": "deleteComment",
+                  "docstring": null
+                },
+                {
+                  "name": "favorite",
+                  "docstring": null
+                },
+                {
+                  "name": "unFavorite",
+                  "docstring": null
+                },
+                {
+                  "name": "findComments",
+                  "docstring": null
+                },
+                {
+                  "name": "create",
+                  "docstring": null
+                },
+                {
+                  "name": "update",
+                  "docstring": null
+                },
+                {
+                  "name": "delete",
+                  "docstring": null
+                },
+                {
+                  "name": "slugify",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { Injectable } from '@nestjs/common';",
+            "import { InjectRepository } from '@nestjs/typeorm';",
+            "import { Repository, getRepository, DeleteResult } from 'typeorm';",
+            "import { ArticleEntity } from './article.entity';",
+            "import { Comment } from './comment.entity';",
+            "import { UserEntity } from '../user/user.entity';",
+            "import { FollowsEntity } from '../profile/follows.entity';",
+            "import { CreateArticleDto } from './dto';",
+            "import {ArticleRO, ArticlesRO, CommentsRO} from './article.interface';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "require",
+              "arguments": [
+                "'slug'"
+              ]
+            },
+            {
+              "function": "Injectable",
+              "arguments": []
+            },
+            {
+              "function": "InjectRepository",
+              "arguments": [
+                "ArticleEntity"
+              ]
+            },
+            {
+              "function": "InjectRepository",
+              "arguments": [
+                "Comment"
+              ]
+            },
+            {
+              "function": "InjectRepository",
+              "arguments": [
+                "UserEntity"
+              ]
+            },
+            {
+              "function": "InjectRepository",
+              "arguments": [
+                "FollowsEntity"
+              ]
+            },
+            {
+              "function": "getRepository(ArticleEntity)\n      .createQueryBuilder('article')\n      .leftJoinAndSelect",
+              "arguments": [
+                "'article.author'",
+                "'author'"
+              ]
+            },
+            {
+              "function": "getRepository(ArticleEntity)\n      .createQueryBuilder",
+              "arguments": [
+                "'article'"
+              ]
+            },
+            {
+              "function": "getRepository",
+              "arguments": [
+                "ArticleEntity"
+              ]
+            },
+            {
+              "function": "qb.where",
+              "arguments": [
+                "\"1 = 1\""
+              ]
+            },
+            {
+              "function": "qb.andWhere",
+              "arguments": [
+                "\"article.tagList LIKE :tag\"",
+                "{ tag: `%${query.tag}%` }"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{username: query.author}"
+              ]
+            },
+            {
+              "function": "qb.andWhere",
+              "arguments": [
+                "\"article.authorId = :id\"",
+                "{ id: author.id }"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{username: query.favorited}"
+              ]
+            },
+            {
+              "function": "author.favorites.map",
+              "arguments": [
+                "el => el.id"
+              ]
+            },
+            {
+              "function": "qb.andWhere",
+              "arguments": [
+                "\"article.authorId IN (:ids)\"",
+                "{ ids }"
+              ]
+            },
+            {
+              "function": "qb.orderBy",
+              "arguments": [
+                "'article.created'",
+                "'DESC'"
+              ]
+            },
+            {
+              "function": "qb.getCount",
+              "arguments": []
+            },
+            {
+              "function": "qb.limit",
+              "arguments": [
+                "query.limit"
+              ]
+            },
+            {
+              "function": "qb.offset",
+              "arguments": [
+                "query.offset"
+              ]
+            },
+            {
+              "function": "qb.getMany",
+              "arguments": []
+            },
+            {
+              "function": "this.followsRepository.find",
+              "arguments": [
+                "{followerId: userId}"
+              ]
+            },
+            {
+              "function": "Array.isArray",
+              "arguments": [
+                "_follows"
+              ]
+            },
+            {
+              "function": "_follows.map",
+              "arguments": [
+                "el => el.followingId"
+              ]
+            },
+            {
+              "function": "getRepository(ArticleEntity)\n      .createQueryBuilder('article')\n      .where",
+              "arguments": [
+                "'article.authorId IN (:ids)'",
+                "{ ids }"
+              ]
+            },
+            {
+              "function": "getRepository(ArticleEntity)\n      .createQueryBuilder",
+              "arguments": [
+                "'article'"
+              ]
+            },
+            {
+              "function": "getRepository",
+              "arguments": [
+                "ArticleEntity"
+              ]
+            },
+            {
+              "function": "qb.orderBy",
+              "arguments": [
+                "'article.created'",
+                "'DESC'"
+              ]
+            },
+            {
+              "function": "qb.getCount",
+              "arguments": []
+            },
+            {
+              "function": "qb.limit",
+              "arguments": [
+                "query.limit"
+              ]
+            },
+            {
+              "function": "qb.offset",
+              "arguments": [
+                "query.offset"
+              ]
+            },
+            {
+              "function": "qb.getMany",
+              "arguments": []
+            },
+            {
+              "function": "this.articleRepository.findOne",
+              "arguments": [
+                "where"
+              ]
+            },
+            {
+              "function": "this.articleRepository.findOne",
+              "arguments": [
+                "{slug}"
+              ]
+            },
+            {
+              "function": "article.comments.push",
+              "arguments": [
+                "comment"
+              ]
+            },
+            {
+              "function": "this.commentRepository.save",
+              "arguments": [
+                "comment"
+              ]
+            },
+            {
+              "function": "this.articleRepository.save",
+              "arguments": [
+                "article"
+              ]
+            },
+            {
+              "function": "this.articleRepository.findOne",
+              "arguments": [
+                "{slug}"
+              ]
+            },
+            {
+              "function": "this.commentRepository.findOne",
+              "arguments": [
+                "id"
+              ]
+            },
+            {
+              "function": "article.comments.findIndex",
+              "arguments": [
+                "_comment => _comment.id === comment.id"
+              ]
+            },
+            {
+              "function": "article.comments.splice",
+              "arguments": [
+                "deleteIndex",
+                "1"
+              ]
+            },
+            {
+              "function": "this.commentRepository.delete",
+              "arguments": [
+                "deleteComments[0].id"
+              ]
+            },
+            {
+              "function": "this.articleRepository.save",
+              "arguments": [
+                "article"
+              ]
+            },
+            {
+              "function": "this.articleRepository.findOne",
+              "arguments": [
+                "{slug}"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "id"
+              ]
+            },
+            {
+              "function": "user.favorites.findIndex",
+              "arguments": [
+                "_article => _article.id === article.id"
+              ]
+            },
+            {
+              "function": "user.favorites.push",
+              "arguments": [
+                "article"
+              ]
+            },
+            {
+              "function": "this.userRepository.save",
+              "arguments": [
+                "user"
+              ]
+            },
+            {
+              "function": "this.articleRepository.save",
+              "arguments": [
+                "article"
+              ]
+            },
+            {
+              "function": "this.articleRepository.findOne",
+              "arguments": [
+                "{slug}"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "id"
+              ]
+            },
+            {
+              "function": "user.favorites.findIndex",
+              "arguments": [
+                "_article => _article.id === article.id"
+              ]
+            },
+            {
+              "function": "user.favorites.splice",
+              "arguments": [
+                "deleteIndex",
+                "1"
+              ]
+            },
+            {
+              "function": "this.userRepository.save",
+              "arguments": [
+                "user"
+              ]
+            },
+            {
+              "function": "this.articleRepository.save",
+              "arguments": [
+                "article"
+              ]
+            },
+            {
+              "function": "this.articleRepository.findOne",
+              "arguments": [
+                "{slug}"
+              ]
+            },
+            {
+              "function": "this.slugify",
+              "arguments": [
+                "articleData.title"
+              ]
+            },
+            {
+              "function": "this.articleRepository.save",
+              "arguments": [
+                "article"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{ where: { id: userId }, relations: ['articles'] }"
+              ]
+            },
+            {
+              "function": "author.articles.push",
+              "arguments": [
+                "article"
+              ]
+            },
+            {
+              "function": "this.userRepository.save",
+              "arguments": [
+                "author"
+              ]
+            },
+            {
+              "function": "this.articleRepository.findOne",
+              "arguments": [
+                "{ slug: slug}"
+              ]
+            },
+            {
+              "function": "Object.assign",
+              "arguments": [
+                "toUpdate",
+                "articleData"
+              ]
+            },
+            {
+              "function": "this.articleRepository.save",
+              "arguments": [
+                "updated"
+              ]
+            },
+            {
+              "function": "this.articleRepository.delete",
+              "arguments": [
+                "{ slug: slug}"
+              ]
+            },
+            {
+              "function": "slug",
+              "arguments": [
+                "title",
+                "{lower: true}"
+              ]
+            },
+            {
+              "function": "(Math.random() * Math.pow(36, 6) | 0).toString",
+              "arguments": [
+                "36"
+              ]
+            },
+            {
+              "function": "Math.random",
+              "arguments": []
+            },
+            {
+              "function": "Math.pow",
+              "arguments": [
+                "36",
+                "6"
+              ]
+            }
+          ]
+        },
+        "comment.entity.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "Comment",
+              "methods": []
+            }
+          ],
+          "imports": [
+            "import { Entity, PrimaryGeneratedColumn, Column, ManyToOne } from 'typeorm';",
+            "import { ArticleEntity } from './article.entity';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Entity",
+              "arguments": []
+            },
+            {
+              "function": "PrimaryGeneratedColumn",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            },
+            {
+              "function": "ManyToOne",
+              "arguments": [
+                "type => ArticleEntity",
+                "article => article.comments"
+              ]
+            }
+          ]
+        },
+        "dto": {
+          "create-article.dto.ts": {
+            "language": "typescript",
+            "functions": [],
+            "classes": [
+              {
+                "name": "CreateArticleDto",
+                "methods": []
+              }
+            ],
+            "imports": [],
+            "variables": [],
+            "calls": []
+          },
+          "create-comment.ts": {
+            "language": "typescript",
+            "functions": [],
+            "classes": [
+              {
+                "name": "CreateCommentDto",
+                "methods": []
+              }
+            ],
+            "imports": [],
+            "variables": [],
+            "calls": []
+          },
+          "index.ts": {
+            "language": "typescript",
+            "functions": [],
+            "classes": [],
+            "imports": [],
+            "variables": [],
+            "calls": []
+          }
+        }
+      },
+      "profile": {
+        "follows.entity.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "FollowsEntity",
+              "methods": []
+            }
+          ],
+          "imports": [
+            "import { Entity, PrimaryGeneratedColumn, Column } from \"typeorm\";"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Entity",
+              "arguments": [
+                "'follows'"
+              ]
+            },
+            {
+              "function": "PrimaryGeneratedColumn",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            }
+          ]
+        },
+        "profile.controller.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "ProfileController",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "getProfile",
+                  "docstring": null
+                },
+                {
+                  "name": "follow",
+                  "docstring": null
+                },
+                {
+                  "name": "unFollow",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { Get, Post, Delete, Param, Controller } from '@nestjs/common';",
+            "import { Request } from 'express';",
+            "import { ProfileService } from './profile.service';",
+            "import { ProfileRO } from './profile.interface';",
+            "import { User } from '../user/user.decorator';",
+            "import {\n  ApiBearerAuth, ApiTags,\n} from '@nestjs/swagger';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "ApiBearerAuth",
+              "arguments": []
+            },
+            {
+              "function": "ApiTags",
+              "arguments": [
+                "'profiles'"
+              ]
+            },
+            {
+              "function": "Controller",
+              "arguments": [
+                "'profiles'"
+              ]
+            },
+            {
+              "function": "Get",
+              "arguments": [
+                "':username'"
+              ]
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'id'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": [
+                "'username'"
+              ]
+            },
+            {
+              "function": "this.profileService.findProfile",
+              "arguments": [
+                "userId",
+                "username"
+              ]
+            },
+            {
+              "function": "Post",
+              "arguments": [
+                "':username/follow'"
+              ]
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'email'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": [
+                "'username'"
+              ]
+            },
+            {
+              "function": "this.profileService.follow",
+              "arguments": [
+                "email",
+                "username"
+              ]
+            },
+            {
+              "function": "Delete",
+              "arguments": [
+                "':username/follow'"
+              ]
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'id'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": [
+                "'username'"
+              ]
+            },
+            {
+              "function": "this.profileService.unFollow",
+              "arguments": [
+                "userId",
+                "username"
+              ]
+            }
+          ]
+        },
+        "profile.interface.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [],
+          "imports": [],
+          "variables": [],
+          "calls": []
+        },
+        "profile.module.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "ProfileModule",
+              "methods": [
+                {
+                  "name": "configure",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import {MiddlewareConsumer, Module, NestModule, RequestMethod} from '@nestjs/common';",
+            "import { ProfileController } from './profile.controller';",
+            "import { TypeOrmModule } from '@nestjs/typeorm';",
+            "import { ProfileService } from './profile.service';",
+            "import { UserModule } from '../user/user.module';",
+            "import {UserEntity} from \"../user/user.entity\";",
+            "import {FollowsEntity} from \"./follows.entity\";",
+            "import {AuthMiddleware} from \"../user/auth.middleware\";"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Module",
+              "arguments": [
+                "{\n  imports: [TypeOrmModule.forFeature([UserEntity, FollowsEntity]), UserModule],\n  providers: [ProfileService],\n  controllers: [\n    ProfileController\n  ],\n  exports: []\n}"
+              ]
+            },
+            {
+              "function": "TypeOrmModule.forFeature",
+              "arguments": [
+                "[UserEntity, FollowsEntity]"
+              ]
+            },
+            {
+              "function": "consumer\n      .apply(AuthMiddleware)\n      .forRoutes",
+              "arguments": [
+                "{path: 'profiles/:username/follow', method: RequestMethod.ALL}"
+              ]
+            },
+            {
+              "function": "consumer\n      .apply",
+              "arguments": [
+                "AuthMiddleware"
+              ]
+            }
+          ]
+        },
+        "profile.service.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "ProfileService",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "findAll",
+                  "docstring": null
+                },
+                {
+                  "name": "findOne",
+                  "docstring": null
+                },
+                {
+                  "name": "findProfile",
+                  "docstring": null
+                },
+                {
+                  "name": "follow",
+                  "docstring": null
+                },
+                {
+                  "name": "unFollow",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { HttpStatus, Injectable} from '@nestjs/common';",
+            "import { InjectRepository } from '@nestjs/typeorm';",
+            "import { Repository } from 'typeorm';",
+            "import { UserEntity } from '../user/user.entity';",
+            "import { DeepPartial } from 'typeorm/common/DeepPartial';",
+            "import { ProfileRO, ProfileData } from './profile.interface';",
+            "import {FollowsEntity} from \"./follows.entity\";",
+            "import {HttpException} from \"@nestjs/common/exceptions/http.exception\";"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Injectable",
+              "arguments": []
+            },
+            {
+              "function": "InjectRepository",
+              "arguments": [
+                "UserEntity"
+              ]
+            },
+            {
+              "function": "InjectRepository",
+              "arguments": [
+                "FollowsEntity"
+              ]
+            },
+            {
+              "function": "this.userRepository.find",
+              "arguments": []
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "options"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{username: followingUsername}"
+              ]
+            },
+            {
+              "function": "this.followsRepository.findOne",
+              "arguments": [
+                "{followerId: id, followingId: _profile.id}"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{username}"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{email: followerEmail}"
+              ]
+            },
+            {
+              "function": "this.followsRepository.findOne",
+              "arguments": [
+                "{followerId: followerUser.id, followingId: followingUser.id}"
+              ]
+            },
+            {
+              "function": "this.followsRepository.save",
+              "arguments": [
+                "follows"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{username}"
+              ]
+            },
+            {
+              "function": "this.followsRepository.delete",
+              "arguments": [
+                "{followerId, followingId}"
+              ]
+            }
+          ]
+        }
+      },
+      "shared": {
+        "base.controller.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "BaseController",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "getUserIdFromToken",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { SECRET } from '../config';",
+            "import * as jwt from 'jsonwebtoken';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "authorization.split",
+              "arguments": [
+                "' '"
+              ]
+            },
+            {
+              "function": "jwt.verify",
+              "arguments": [
+                "token",
+                "SECRET"
+              ]
+            }
+          ]
+        },
+        "pipes": {
+          "validation.pipe.ts": {
+            "language": "typescript",
+            "functions": [],
+            "classes": [
+              {
+                "name": "ValidationPipe",
+                "methods": [
+                  {
+                    "name": "transform",
+                    "docstring": null
+                  },
+                  {
+                    "name": "buildError",
+                    "docstring": null
+                  },
+                  {
+                    "name": "toValidate",
+                    "docstring": null
+                  }
+                ]
+              }
+            ],
+            "imports": [
+              "import {PipeTransform, ArgumentMetadata, BadRequestException, HttpStatus, Injectable} from '@nestjs/common';",
+              "import { validate } from 'class-validator';",
+              "import { plainToClass } from 'class-transformer';",
+              "import { HttpException } from '@nestjs/common/exceptions/http.exception';"
+            ],
+            "variables": [],
+            "calls": [
+              {
+                "function": "Injectable",
+                "arguments": []
+              },
+              {
+                "function": "this.toValidate",
+                "arguments": [
+                  "metatype"
+                ]
+              },
+              {
+                "function": "plainToClass",
+                "arguments": [
+                  "metatype",
+                  "value"
+                ]
+              },
+              {
+                "function": "validate",
+                "arguments": [
+                  "object"
+                ]
+              },
+              {
+                "function": "this.buildError",
+                "arguments": [
+                  "errors"
+                ]
+              },
+              {
+                "function": "errors.forEach",
+                "arguments": [
+                  "el => {\n      let prop = el.property;\n      Object.entries(el.constraints).forEach(constraint => {\n        result[prop + constraint[0]] = `${constraint[1]}`;\n      });\n    }"
+                ]
+              },
+              {
+                "function": "Object.entries(el.constraints).forEach",
+                "arguments": [
+                  "constraint => {\n        result[prop + constraint[0]] = `${constraint[1]}`;\n      }"
+                ]
+              },
+              {
+                "function": "Object.entries",
+                "arguments": [
+                  "el.constraints"
+                ]
+              },
+              {
+                "function": "types.find",
+                "arguments": [
+                  "(type) => metatype === type"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "tag": {
+        "tag.controller.spec.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [],
+          "imports": [
+            "import { Test } from '@nestjs/testing';",
+            "import { TagController } from './tag.controller';",
+            "import { TagService } from './tag.service';",
+            "import {TypeOrmModule} from \"@nestjs/typeorm\";",
+            "import {TagEntity} from \"./tag.entity\";"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "describe",
+              "arguments": [
+                "'TagController'",
+                "() => {\n  let tagController: TagController;\n  let tagService: TagService;\n\n  beforeEach(async () => {\n    const module = await Test.createTestingModule({\n      imports: [TypeOrmModule.forRoot(), TypeOrmModule.forFeature([TagEntity])],\n      controllers: [TagController],\n      providers: [TagService],\n    }).compile();\n\n    tagService = module.get<TagService>(TagService);\n    tagController = module.get<TagController>(TagController);\n  });\n\n  describe('findAll', () => {\n    it('should return an array of tags', async () => {\n      const tags : TagEntity[] = [];\n      const createTag = (id, name) => {\n        const tag = new TagEntity();\n        tag.id = id;\n        tag.tag = name;\n        return tag;\n      }\n      tags.push(createTag(1, 'angularjs'));\n      tags.push(createTag(2, 'reactjs'));\n\n      jest.spyOn(tagService, 'findAll').mockImplementation(() => Promise.resolve(tags));\n      \n      const findAllResult = await tagController.findAll();\n      expect(findAllResult).toBe(tags);\n    });\n  });\n}"
+              ]
+            },
+            {
+              "function": "beforeEach",
+              "arguments": [
+                "async () => {\n    const module = await Test.createTestingModule({\n      imports: [TypeOrmModule.forRoot(), TypeOrmModule.forFeature([TagEntity])],\n      controllers: [TagController],\n      providers: [TagService],\n    }).compile();\n\n    tagService = module.get<TagService>(TagService);\n    tagController = module.get<TagController>(TagController);\n  }"
+              ]
+            },
+            {
+              "function": "Test.createTestingModule({\n      imports: [TypeOrmModule.forRoot(), TypeOrmModule.forFeature([TagEntity])],\n      controllers: [TagController],\n      providers: [TagService],\n    }).compile",
+              "arguments": []
+            },
+            {
+              "function": "Test.createTestingModule",
+              "arguments": [
+                "{\n      imports: [TypeOrmModule.forRoot(), TypeOrmModule.forFeature([TagEntity])],\n      controllers: [TagController],\n      providers: [TagService],\n    }"
+              ]
+            },
+            {
+              "function": "TypeOrmModule.forRoot",
+              "arguments": []
+            },
+            {
+              "function": "TypeOrmModule.forFeature",
+              "arguments": [
+                "[TagEntity]"
+              ]
+            },
+            {
+              "function": "module.get",
+              "arguments": [
+                "TagService"
+              ]
+            },
+            {
+              "function": "module.get",
+              "arguments": [
+                "TagController"
+              ]
+            },
+            {
+              "function": "describe",
+              "arguments": [
+                "'findAll'",
+                "() => {\n    it('should return an array of tags', async () => {\n      const tags : TagEntity[] = [];\n      const createTag = (id, name) => {\n        const tag = new TagEntity();\n        tag.id = id;\n        tag.tag = name;\n        return tag;\n      }\n      tags.push(createTag(1, 'angularjs'));\n      tags.push(createTag(2, 'reactjs'));\n\n      jest.spyOn(tagService, 'findAll').mockImplementation(() => Promise.resolve(tags));\n      \n      const findAllResult = await tagController.findAll();\n      expect(findAllResult).toBe(tags);\n    });\n  }"
+              ]
+            },
+            {
+              "function": "it",
+              "arguments": [
+                "'should return an array of tags'",
+                "async () => {\n      const tags : TagEntity[] = [];\n      const createTag = (id, name) => {\n        const tag = new TagEntity();\n        tag.id = id;\n        tag.tag = name;\n        return tag;\n      }\n      tags.push(createTag(1, 'angularjs'));\n      tags.push(createTag(2, 'reactjs'));\n\n      jest.spyOn(tagService, 'findAll').mockImplementation(() => Promise.resolve(tags));\n      \n      const findAllResult = await tagController.findAll();\n      expect(findAllResult).toBe(tags);\n    }"
+              ]
+            },
+            {
+              "function": "tags.push",
+              "arguments": [
+                "createTag(1, 'angularjs')"
+              ]
+            },
+            {
+              "function": "createTag",
+              "arguments": [
+                "1",
+                "'angularjs'"
+              ]
+            },
+            {
+              "function": "tags.push",
+              "arguments": [
+                "createTag(2, 'reactjs')"
+              ]
+            },
+            {
+              "function": "createTag",
+              "arguments": [
+                "2",
+                "'reactjs'"
+              ]
+            },
+            {
+              "function": "jest.spyOn(tagService, 'findAll').mockImplementation",
+              "arguments": [
+                "() => Promise.resolve(tags)"
+              ]
+            },
+            {
+              "function": "jest.spyOn",
+              "arguments": [
+                "tagService",
+                "'findAll'"
+              ]
+            },
+            {
+              "function": "Promise.resolve",
+              "arguments": [
+                "tags"
+              ]
+            },
+            {
+              "function": "tagController.findAll",
+              "arguments": []
+            },
+            {
+              "function": "expect(findAllResult).toBe",
+              "arguments": [
+                "tags"
+              ]
+            },
+            {
+              "function": "expect",
+              "arguments": [
+                "findAllResult"
+              ]
+            }
+          ]
+        },
+        "tag.controller.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "TagController",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "findAll",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import {Get, Controller } from '@nestjs/common';",
+            "import { TagEntity } from './tag.entity';",
+            "import { TagService } from './tag.service';",
+            "import {\n  ApiBearerAuth, ApiTags,\n} from '@nestjs/swagger';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "ApiBearerAuth",
+              "arguments": []
+            },
+            {
+              "function": "ApiTags",
+              "arguments": [
+                "'tags'"
+              ]
+            },
+            {
+              "function": "Controller",
+              "arguments": [
+                "'tags'"
+              ]
+            },
+            {
+              "function": "Get",
+              "arguments": []
+            },
+            {
+              "function": "this.tagService.findAll",
+              "arguments": []
+            }
+          ]
+        },
+        "tag.entity.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "TagEntity",
+              "methods": []
+            }
+          ],
+          "imports": [
+            "import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Entity",
+              "arguments": [
+                "'tag'"
+              ]
+            },
+            {
+              "function": "PrimaryGeneratedColumn",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            }
+          ]
+        },
+        "tag.module.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "TagModule",
+              "methods": [
+                {
+                  "name": "configure",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import {MiddlewareConsumer, Module, NestModule, RequestMethod} from '@nestjs/common';",
+            "import { TypeOrmModule } from '@nestjs/typeorm';",
+            "import { UserModule } from '../user/user.module';",
+            "import { TagService } from './tag.service';",
+            "import { TagEntity } from './tag.entity';",
+            "import { TagController } from './tag.controller';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Module",
+              "arguments": [
+                "{\n  imports: [TypeOrmModule.forFeature([TagEntity]), UserModule],\n  providers: [TagService],\n  controllers: [\n    TagController\n  ],\n  exports: []\n}"
+              ]
+            },
+            {
+              "function": "TypeOrmModule.forFeature",
+              "arguments": [
+                "[TagEntity]"
+              ]
+            }
+          ]
+        },
+        "tag.service.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "TagService",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "findAll",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { Injectable} from '@nestjs/common';",
+            "import { InjectRepository } from '@nestjs/typeorm';",
+            "import { Repository } from 'typeorm';",
+            "import { TagEntity } from './tag.entity';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Injectable",
+              "arguments": []
+            },
+            {
+              "function": "InjectRepository",
+              "arguments": [
+                "TagEntity"
+              ]
+            },
+            {
+              "function": "this.tagRepository.find",
+              "arguments": []
+            }
+          ]
+        }
+      },
+      "user": {
+        "auth.middleware.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "AuthMiddleware",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "use",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { HttpException } from '@nestjs/common/exceptions/http.exception';",
+            "import { NestMiddleware, HttpStatus, Injectable } from '@nestjs/common';",
+            "import { ExtractJwt, Strategy } from 'passport-jwt';",
+            "import { Request, Response, NextFunction } from 'express';",
+            "import * as jwt from 'jsonwebtoken';",
+            "import { SECRET } from '../config';",
+            "import { UserService } from './user.service';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Injectable",
+              "arguments": []
+            },
+            {
+              "function": "(authHeaders as string).split",
+              "arguments": [
+                "' '"
+              ]
+            },
+            {
+              "function": "(authHeaders as string).split",
+              "arguments": [
+                "' '"
+              ]
+            },
+            {
+              "function": "jwt.verify",
+              "arguments": [
+                "token",
+                "SECRET"
+              ]
+            },
+            {
+              "function": "this.userService.findById",
+              "arguments": [
+                "decoded.id"
+              ]
+            },
+            {
+              "function": "next",
+              "arguments": []
+            }
+          ]
+        },
+        "user.controller.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "UserController",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "findMe",
+                  "docstring": null
+                },
+                {
+                  "name": "update",
+                  "docstring": null
+                },
+                {
+                  "name": "create",
+                  "docstring": null
+                },
+                {
+                  "name": "delete",
+                  "docstring": null
+                },
+                {
+                  "name": "login",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { Get, Post, Body, Put, Delete, Param, Controller, UsePipes } from '@nestjs/common';",
+            "import { Request } from 'express';",
+            "import { UserService } from './user.service';",
+            "import { UserRO } from './user.interface';",
+            "import { CreateUserDto, UpdateUserDto, LoginUserDto } from './dto';",
+            "import { HttpException } from '@nestjs/common/exceptions/http.exception';",
+            "import { User } from './user.decorator';",
+            "import { ValidationPipe } from '../shared/pipes/validation.pipe';",
+            "import {\n  ApiBearerAuth, ApiTags\n} from '@nestjs/swagger';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "ApiBearerAuth",
+              "arguments": []
+            },
+            {
+              "function": "ApiTags",
+              "arguments": [
+                "'user'"
+              ]
+            },
+            {
+              "function": "Controller",
+              "arguments": []
+            },
+            {
+              "function": "Get",
+              "arguments": [
+                "'user'"
+              ]
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'email'"
+              ]
+            },
+            {
+              "function": "this.userService.findByEmail",
+              "arguments": [
+                "email"
+              ]
+            },
+            {
+              "function": "Put",
+              "arguments": [
+                "'user'"
+              ]
+            },
+            {
+              "function": "User",
+              "arguments": [
+                "'id'"
+              ]
+            },
+            {
+              "function": "Body",
+              "arguments": [
+                "'user'"
+              ]
+            },
+            {
+              "function": "this.userService.update",
+              "arguments": [
+                "userId",
+                "userData"
+              ]
+            },
+            {
+              "function": "UsePipes",
+              "arguments": [
+                "new ValidationPipe()"
+              ]
+            },
+            {
+              "function": "Post",
+              "arguments": [
+                "'users'"
+              ]
+            },
+            {
+              "function": "Body",
+              "arguments": [
+                "'user'"
+              ]
+            },
+            {
+              "function": "this.userService.create",
+              "arguments": [
+                "userData"
+              ]
+            },
+            {
+              "function": "Delete",
+              "arguments": [
+                "'users/:slug'"
+              ]
+            },
+            {
+              "function": "Param",
+              "arguments": []
+            },
+            {
+              "function": "this.userService.delete",
+              "arguments": [
+                "params.slug"
+              ]
+            },
+            {
+              "function": "UsePipes",
+              "arguments": [
+                "new ValidationPipe()"
+              ]
+            },
+            {
+              "function": "Post",
+              "arguments": [
+                "'users/login'"
+              ]
+            },
+            {
+              "function": "Body",
+              "arguments": [
+                "'user'"
+              ]
+            },
+            {
+              "function": "this.userService.findOne",
+              "arguments": [
+                "loginUserDto"
+              ]
+            },
+            {
+              "function": "this.userService.generateJWT",
+              "arguments": [
+                "_user"
+              ]
+            }
+          ]
+        },
+        "user.decorator.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [],
+          "imports": [
+            "import { createParamDecorator, ExecutionContext } from '@nestjs/common';",
+            "import { SECRET } from '../config';",
+            "import * as jwt from 'jsonwebtoken';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "createParamDecorator",
+              "arguments": [
+                "(data: any, ctx: ExecutionContext) => {\n  const req = ctx.switchToHttp().getRequest();\n  // if route is protected, there is a user set in auth.middleware\n  if (!!req.user) {\n    return !!data ? req.user[data] : req.user;\n  }\n\n  // in case a route is not protected, we still want to get the optional auth user from jwt\n  const token = req.headers.authorization ? (req.headers.authorization as string).split(' ') : null;\n  if (token && token[1]) {\n    const decoded: any = jwt.verify(token[1], SECRET);\n    return !!data ? decoded[data] : decoded.user;\n  }\n}"
+              ]
+            },
+            {
+              "function": "ctx.switchToHttp().getRequest",
+              "arguments": []
+            },
+            {
+              "function": "ctx.switchToHttp",
+              "arguments": []
+            },
+            {
+              "function": "(req.headers.authorization as string).split",
+              "arguments": [
+                "' '"
+              ]
+            },
+            {
+              "function": "jwt.verify",
+              "arguments": [
+                "token[1]",
+                "SECRET"
+              ]
+            }
+          ]
+        },
+        "user.entity.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "UserEntity",
+              "methods": [
+                {
+                  "name": "hashPassword",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import {Entity, PrimaryGeneratedColumn, Column, BeforeInsert, JoinTable, ManyToMany, OneToMany} from 'typeorm';",
+            "import { IsEmail } from 'class-validator';",
+            "import * as argon2 from 'argon2';",
+            "import { ArticleEntity } from '../article/article.entity';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Entity",
+              "arguments": [
+                "'user'"
+              ]
+            },
+            {
+              "function": "PrimaryGeneratedColumn",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            },
+            {
+              "function": "IsEmail",
+              "arguments": []
+            },
+            {
+              "function": "Column",
+              "arguments": [
+                "{default: ''}"
+              ]
+            },
+            {
+              "function": "Column",
+              "arguments": [
+                "{default: ''}"
+              ]
+            },
+            {
+              "function": "Column",
+              "arguments": []
+            },
+            {
+              "function": "BeforeInsert",
+              "arguments": []
+            },
+            {
+              "function": "argon2.hash",
+              "arguments": [
+                "this.password"
+              ]
+            },
+            {
+              "function": "ManyToMany",
+              "arguments": [
+                "type => ArticleEntity"
+              ]
+            },
+            {
+              "function": "JoinTable",
+              "arguments": []
+            },
+            {
+              "function": "OneToMany",
+              "arguments": [
+                "type => ArticleEntity",
+                "article => article.author"
+              ]
+            }
+          ]
+        },
+        "user.interface.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [],
+          "imports": [],
+          "variables": [],
+          "calls": []
+        },
+        "user.module.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "UserModule",
+              "methods": [
+                {
+                  "name": "configure",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import {MiddlewareConsumer, Module, NestModule, RequestMethod} from '@nestjs/common';",
+            "import { UserController } from './user.controller';",
+            "import { TypeOrmModule } from '@nestjs/typeorm';",
+            "import { UserEntity } from './user.entity';",
+            "import { UserService } from './user.service';",
+            "import { AuthMiddleware } from './auth.middleware';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "Module",
+              "arguments": [
+                "{\n  imports: [TypeOrmModule.forFeature([UserEntity])],\n  providers: [UserService],\n  controllers: [\n    UserController\n  ],\n  exports: [UserService]\n}"
+              ]
+            },
+            {
+              "function": "TypeOrmModule.forFeature",
+              "arguments": [
+                "[UserEntity]"
+              ]
+            },
+            {
+              "function": "consumer\n      .apply(AuthMiddleware)\n      .forRoutes",
+              "arguments": [
+                "{path: 'user', method: RequestMethod.GET}",
+                "{path: 'user', method: RequestMethod.PUT}"
+              ]
+            },
+            {
+              "function": "consumer\n      .apply",
+              "arguments": [
+                "AuthMiddleware"
+              ]
+            }
+          ]
+        },
+        "user.service.ts": {
+          "language": "typescript",
+          "functions": [],
+          "classes": [
+            {
+              "name": "UserService",
+              "methods": [
+                {
+                  "name": "constructor",
+                  "docstring": null
+                },
+                {
+                  "name": "findAll",
+                  "docstring": null
+                },
+                {
+                  "name": "findOne",
+                  "docstring": null
+                },
+                {
+                  "name": "create",
+                  "docstring": null
+                },
+                {
+                  "name": "update",
+                  "docstring": null
+                },
+                {
+                  "name": "delete",
+                  "docstring": null
+                },
+                {
+                  "name": "findById",
+                  "docstring": null
+                },
+                {
+                  "name": "findByEmail",
+                  "docstring": null
+                },
+                {
+                  "name": "generateJWT",
+                  "docstring": null
+                },
+                {
+                  "name": "buildUserRO",
+                  "docstring": null
+                }
+              ]
+            }
+          ],
+          "imports": [
+            "import { Injectable } from '@nestjs/common';",
+            "import { InjectRepository } from '@nestjs/typeorm';",
+            "import { Repository, getRepository, DeleteResult } from 'typeorm';",
+            "import { UserEntity } from './user.entity';",
+            "import {CreateUserDto, LoginUserDto, UpdateUserDto} from './dto';",
+            "import { SECRET } from '../config';",
+            "import { UserRO } from './user.interface';",
+            "import { validate } from 'class-validator';",
+            "import { HttpException } from '@nestjs/common/exceptions/http.exception';",
+            "import { HttpStatus } from '@nestjs/common';",
+            "import * as argon2 from 'argon2';"
+          ],
+          "variables": [],
+          "calls": [
+            {
+              "function": "require",
+              "arguments": [
+                "'jsonwebtoken'"
+              ]
+            },
+            {
+              "function": "Injectable",
+              "arguments": []
+            },
+            {
+              "function": "InjectRepository",
+              "arguments": [
+                "UserEntity"
+              ]
+            },
+            {
+              "function": "this.userRepository.find",
+              "arguments": []
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{email}"
+              ]
+            },
+            {
+              "function": "argon2.verify",
+              "arguments": [
+                "user.password",
+                "password"
+              ]
+            },
+            {
+              "function": "getRepository(UserEntity)\n      .createQueryBuilder('user')\n      .where('user.username = :username', { username })\n      .orWhere",
+              "arguments": [
+                "'user.email = :email'",
+                "{ email }"
+              ]
+            },
+            {
+              "function": "getRepository(UserEntity)\n      .createQueryBuilder('user')\n      .where",
+              "arguments": [
+                "'user.username = :username'",
+                "{ username }"
+              ]
+            },
+            {
+              "function": "getRepository(UserEntity)\n      .createQueryBuilder",
+              "arguments": [
+                "'user'"
+              ]
+            },
+            {
+              "function": "getRepository",
+              "arguments": [
+                "UserEntity"
+              ]
+            },
+            {
+              "function": "qb.getOne",
+              "arguments": []
+            },
+            {
+              "function": "validate",
+              "arguments": [
+                "newUser"
+              ]
+            },
+            {
+              "function": "this.userRepository.save",
+              "arguments": [
+                "newUser"
+              ]
+            },
+            {
+              "function": "this.buildUserRO",
+              "arguments": [
+                "savedUser"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "id"
+              ]
+            },
+            {
+              "function": "Object.assign",
+              "arguments": [
+                "toUpdate",
+                "dto"
+              ]
+            },
+            {
+              "function": "this.userRepository.save",
+              "arguments": [
+                "updated"
+              ]
+            },
+            {
+              "function": "this.userRepository.delete",
+              "arguments": [
+                "{ email: email}"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "id"
+              ]
+            },
+            {
+              "function": "this.buildUserRO",
+              "arguments": [
+                "user"
+              ]
+            },
+            {
+              "function": "this.userRepository.findOne",
+              "arguments": [
+                "{email: email}"
+              ]
+            },
+            {
+              "function": "this.buildUserRO",
+              "arguments": [
+                "user"
+              ]
+            },
+            {
+              "function": "exp.setDate",
+              "arguments": [
+                "today.getDate() + 60"
+              ]
+            },
+            {
+              "function": "today.getDate",
+              "arguments": []
+            },
+            {
+              "function": "jwt.sign",
+              "arguments": [
+                "{\n      id: user.id,\n      username: user.username,\n      email: user.email,\n      exp: exp.getTime() / 1000,\n    }",
+                "SECRET"
+              ]
+            },
+            {
+              "function": "exp.getTime",
+              "arguments": []
+            },
+            {
+              "function": "this.generateJWT",
+              "arguments": [
+                "user"
+              ]
+            }
+          ]
+        },
+        "dto": {
+          "create-user.dto.ts": {
+            "language": "typescript",
+            "functions": [],
+            "classes": [
+              {
+                "name": "CreateUserDto",
+                "methods": []
+              }
+            ],
+            "imports": [
+              "import { IsNotEmpty } from 'class-validator';"
+            ],
+            "variables": [],
+            "calls": [
+              {
+                "function": "IsNotEmpty",
+                "arguments": []
+              },
+              {
+                "function": "IsNotEmpty",
+                "arguments": []
+              },
+              {
+                "function": "IsNotEmpty",
+                "arguments": []
+              }
+            ]
+          },
+          "index.ts": {
+            "language": "typescript",
+            "functions": [],
+            "classes": [],
+            "imports": [],
+            "variables": [],
+            "calls": []
+          },
+          "login-user.dto.ts": {
+            "language": "typescript",
+            "functions": [],
+            "classes": [
+              {
+                "name": "LoginUserDto",
+                "methods": []
+              }
+            ],
+            "imports": [
+              "import { IsNotEmpty } from 'class-validator';"
+            ],
+            "variables": [],
+            "calls": [
+              {
+                "function": "IsNotEmpty",
+                "arguments": []
+              },
+              {
+                "function": "IsNotEmpty",
+                "arguments": []
+              }
+            ]
+          },
+          "update-user.dto.ts": {
+            "language": "typescript",
+            "functions": [],
+            "classes": [
+              {
+                "name": "UpdateUserDto",
+                "methods": []
+              }
+            ],
+            "imports": [],
+            "variables": [],
+            "calls": []
+          }
+        }
+      }
+    }
+  }
+}

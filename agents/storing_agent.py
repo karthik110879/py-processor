@@ -1,6 +1,22 @@
 import os
-from langchain.tools import tool
-from langchain.agents import create_agent
+try:
+    from langchain_core.tools import tool
+except ImportError:
+    try:
+        from langchain.tools import tool
+    except ImportError:
+        # Fallback: create a dummy tool decorator if langchain is not available
+        def tool(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+try:
+    from langchain.agents import create_agent
+except ImportError:
+    # Fallback: create a dummy create_agent function
+    def create_agent(*args, **kwargs):
+        raise ImportError("langchain is not installed. Please install it with: pip install langchain")
 from langchain_openai import OpenAIEmbeddings
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct

@@ -10,8 +10,14 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from services.pdf_service import PDFService
 from utils.response_formatter import success_response, error_response
-from agents import storing_agent
-from services.parser_service import repo_to_json
+from services.parser_service import repo_to_json, generate_pkg
+
+try:
+    from agents import storing_agent
+    STORING_AGENT_AVAILABLE = True
+except ImportError:
+    storing_agent = None
+    STORING_AGENT_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -203,23 +209,35 @@ def health_check() -> tuple:
 def get_stored_chunks():
     query = request.args.get("q", None)
     
+    if not STORING_AGENT_AVAILABLE:
+        return error_response(
+            "LangChain agents not available. Please install langchain: pip install langchain langchain-openai",
+            status_code=503
+        )
+    
     try:
         result = storing_agent.search_vectors.invoke({"query": query})
         return {"result": result}
     
     except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        return error_response(
+            f"Failed to search chunks: {str(e)}",
+            status_code=500
+        )
     
 
 @pdf_bp.route('/clone-and-generate', methods=['POST'])
 def clone_and_generate():
     """
     Clone a repository into cloned_repos using the original repo name,
-    then generate JSON using repo_to_json.
+    then generate PKG JSON using generate_pkg.
     Expects JSON body: { "repo_url": "https://github.com/user/repo.git" }
+    
+    Optional query parameters:
+        - generate_summaries: bool (default: false) - Generate LLM summaries
+        - fan_threshold: int (default: 3) - Fan-in threshold for filtering
+        - include_features: bool (default: true) - Include feature groupings
+        - format: str (default: "pkg") - Output format: "pkg" or "legacy"
     """
     try:
         data = request.get_json()
@@ -228,6 +246,12 @@ def clone_and_generate():
         if not repo_url:
             logger.error("Missing repo_url in request body")
             return error_response("repo_url is required", 400)
+
+        # Parse optional parameters
+        generate_summaries = request.args.get('generate_summaries', 'false').lower() == 'true'
+        fan_threshold = int(request.args.get('fan_threshold', '3'))
+        include_features = request.args.get('include_features', 'true').lower() != 'false'
+        output_format = request.args.get('format', 'pkg').lower()
 
         # Ensure cloned_repos folder exists
         base_dir = os.path.join(os.getcwd(), "cloned_repos")
@@ -243,7 +267,14 @@ def clone_and_generate():
         else:
             # Clone repo
             try:
-                subprocess.run([r"C:\Program Files\Git\cmd\git.exe", "clone", repo_url, folder_path],check=True)
+                # Try to use git from PATH first, then fallback to Windows path
+                git_cmd = "git"
+                try:
+                    subprocess.run([git_cmd, "--version"], check=True, capture_output=True)
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    git_cmd = r"C:\Program Files\Git\cmd\git.exe"
+                
+                subprocess.run([git_cmd, "clone", repo_url, folder_path], check=True)
                 logger.info(f"Repository cloned successfully into {folder_path}")
             except FileNotFoundError:
                 logger.exception("Git executable not found")
@@ -254,15 +285,36 @@ def clone_and_generate():
 
         # Generate JSON from cloned repo
         try:
-            json_output = repo_to_json("cloned_repos")
+            if output_format == "legacy":
+                # Use legacy format for backward compatibility
+                json_output = repo_to_json(folder_path)
+                return success_response(
+                    data={"repo": repo_name, **json_output},
+                    message="Repository parsed successfully (legacy format)"
+                )
+            else:
+                # Use new PKG format
+                pkg_output = generate_pkg(
+                    repo_path=folder_path,
+                    fan_threshold=fan_threshold,
+                    include_features=include_features
+                )
+                
+                # Optionally generate summaries if requested
+                if generate_summaries:
+                    try:
+                        from services.summary_generator import generate_summaries
+                        pkg_output = generate_summaries(pkg_output)
+                    except ImportError:
+                        logger.warning("Summary generator not available, skipping summaries")
+                
+                return success_response(
+                    data=pkg_output,
+                    message=f"PKG generated successfully for {repo_name}"
+                )
         except Exception as e:
-            logger.exception("Error generating JSON from repo")
-            return error_response(f"Failed to generate JSON: {str(e)}", 500)
-
-        return {
-            "repo": repo_name,
-            **json_output
-        }
+            logger.exception("Error generating PKG from repo")
+            return error_response(f"Failed to generate PKG: {str(e)}", 500)
 
     except subprocess.CalledProcessError as e:
         logger.exception("Failed to clone repository")

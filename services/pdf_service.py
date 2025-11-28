@@ -7,8 +7,17 @@ import tempfile
 import os
 import json
 import base64
-import agents.chunking_agent as chunking_agent
-import agents.storing_agent as storing_agent
+try:
+    import agents.chunking_agent as chunking_agent
+    import agents.storing_agent as storing_agent
+    AGENTS_AVAILABLE = True
+except ImportError as e:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"LangChain agents not available: {e}. Chunking and storing features will be disabled.")
+    chunking_agent = None
+    storing_agent = None
+    AGENTS_AVAILABLE = False
 try:
     from docling.document_converter import DocumentConverter
     from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -33,10 +42,17 @@ class PDFService:
             enable_cleanup: Enable cleanup to remove headers/footers/watermarks (default: True)
         """
         if DocumentConverter is None:
-            raise ImportError(
+            logger.warning(
                 "docling library is not installed. "
-                "Please install it using: pip install docling"
+                "PDF processing features will be disabled. "
+                "Install it using: pip install docling"
             )
+            self.converter = None
+            self._pipeline_options = None
+            self._enable_ocr = False
+            self._enable_cleanup = False
+            self._last_ocr_setting = False
+            return
         
         # Initialize docling converter
         # Note: DocumentConverter doesn't accept pipeline_options in constructor
@@ -397,25 +413,9 @@ class PDFService:
                 "chunks": chunks if chunks else None
             }
 
-            # ➜ STORE CHUNKS IN CHROMA DB
-            if content:
+            # ➜ STORE CHUNKS IN QDRANT DB
+            if content and AGENTS_AVAILABLE:
                 try:
-                    # chunked_data = chunking_agent.create_chunking_agent().invoke({"input": content})
-                    # agent = chunking_agent.create_chunking_agent()
-                    # response = agent.invoke({
-                    #     "messages": [{
-                    #             "role": "user",
-                    #             "content": content
-                    #         }]
-                    # })
-
-                    # output_text = "\n".join(response["structured_response"].chunks)
-                    # print("Chunked data:", chunked_data)
-                    # stored_count = storing_agent.create_store_agent().invoke({
-                    #     "payload": {
-                    #         "chunks": chunked_data
-                    #     }
-                    # })
                     chunk_agent_response = chunking_agent.chunk_text.invoke({
                         "content": content,
                     })
@@ -432,6 +432,8 @@ class PDFService:
                     result_data["chunks"] = chunk_agent_response["chunks"]
                 except Exception as e:
                     logger.error(f"Failed to store chunks in Qdrant DB: {str(e)}")
+            elif content and not AGENTS_AVAILABLE:
+                logger.debug("LangChain agents not available, skipping chunk storage")
                         
             return result_data
             

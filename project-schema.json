@@ -1,0 +1,172 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Project Knowledge Graph (PKG) Schema",
+    "type": "object",
+    "required": ["version", "project", "modules", "symbols", "edges"],
+    "properties": {
+      "version": {
+        "type": "string",
+        "description": "PKG schema version (semver). Bump when making incompatible changes."
+      },
+      "generatedAt": {
+        "type": "string",
+        "format": "date-time",
+        "description": "ISO timestamp when this PKG was generated."
+      },
+      "gitSha": {
+        "type": ["string", "null"],
+        "description": "Optional commit SHA used to create this snapshot."
+      },
+      "project": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "rootPath": { "type": "string", "description": "Path inside cloned_repos or repo root" },
+          "languages": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "summary": { "type": "string" },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Optional project-level metadata (package managers, build system, etc.)"
+          }
+        },
+        "additionalProperties": false
+      },
+      "features": {
+        "type": "array",
+        "description": "Optional higher-level groupings (folders, bounded contexts).",
+        "items": {
+          "type": "object",
+          "required": ["id", "name", "path"],
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "path": { "type": "string" },
+            "summary": { "type": "string" },
+            "moduleIds": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "modules": {
+        "type": "array",
+        "description": "File / module level nodes (one per file or logical module).",
+        "items": {
+          "type": "object",
+          "required": ["id", "path"],
+          "properties": {
+            "id": { "type": "string" },
+            "path": { "type": "string", "description": "Relative path from repo root" },
+            "featureId": { "type": ["string", "null"] },
+            "kind": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Tags such as ['controller','service','entity','component','util']"
+            },
+            "loc": { "type": "integer", "minimum": 0 },
+            "hash": { "type": "string", "description": "Content hash for quick diffs" },
+            "exports": {
+              "type": "array",
+              "description": "List of exported symbol IDs",
+              "items": { "type": "string" }
+            },
+            "imports": {
+              "type": "array",
+              "description": "Direct import edge targets (module IDs)",
+              "items": { "type": "string" }
+            },
+            "moduleSummary": { "type": "string" },
+            "metadata": { "type": "object", "additionalProperties": true }
+          },
+          "additionalProperties": false
+        }
+      },
+      "symbols": {
+        "type": "array",
+        "description": "Functions, classes, interfaces, methods, exported or important symbols.",
+        "items": {
+          "type": "object",
+          "required": ["id", "moduleId", "name", "kind"],
+          "properties": {
+            "id": { "type": "string" },
+            "moduleId": { "type": "string" },
+            "name": { "type": "string" },
+            "kind": {
+              "type": "string",
+              "enum": ["function", "class", "interface", "method", "variable", "enum", "type", "component"]
+            },
+            "isExported": { "type": "boolean" },
+            "signature": { "type": "string", "description": "Human-readable signature (params -> returnType)" },
+            "visibility": { "type": "string", "enum": ["public", "protected", "private", "package"], "default": "public" },
+            "summary": { "type": "string" },
+            "examples": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "metadata": { "type": "object", "additionalProperties": true },
+            "embeddingId": { "type": ["string", "null"], "description": "Optional pointer to external embedding store" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "endpoints": {
+        "type": "array",
+        "description": "HTTP or RPC endpoints discovered by static analysis.",
+        "items": {
+          "type": "object",
+          "required": ["id", "method", "path", "handlerModuleId"],
+          "properties": {
+            "id": { "type": "string" },
+            "method": { "type": "string", "description": "HTTP verb or RPC type" },
+            "path": { "type": "string" },
+            "handlerModuleId": { "type": "string" },
+            "handlerSymbolId": { "type": ["string", "null"] },
+            "auth": { "type": ["string", "null"] },
+            "summary": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "edges": {
+        "type": "array",
+        "description": "Graph edges between IDs (moduleId or symbolId). Use compact edge list.",
+        "items": {
+          "type": "object",
+          "required": ["from", "to", "type"],
+          "properties": {
+            "from": { "type": "string" },
+            "to": { "type": "string" },
+            "type": {
+              "type": "string",
+              "enum": ["imports", "calls", "implements", "extends", "routes-to", "uses-db", "tests", "contains"]
+            },
+            "weight": { "type": "number", "minimum": 0, "default": 1 },
+            "metadata": { "type": "object", "additionalProperties": true }
+          },
+          "additionalProperties": false
+        }
+      },
+      "summaries": {
+        "type": "object",
+        "description": "Optional precomputed textual summaries for project-level quick answers.",
+        "properties": {
+          "projectSummary": { "type": "string" },
+          "topModulesSummary": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  }
+  
