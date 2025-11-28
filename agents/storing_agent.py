@@ -4,8 +4,12 @@ from langchain.agents import create_agent
 from langchain_openai import OpenAIEmbeddings
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct
+from qdrant_client.http.exceptions import UnexpectedResponse
 from typing import Dict, Any
 import uuid
+import json
+
+COLLECTION_NAME = "documents"
 
 @tool("store_vectors")
 def store_vectors(payload: Dict[str, Any]) -> int:
@@ -36,10 +40,9 @@ def store_vectors(payload: Dict[str, Any]) -> int:
             openai_api_key=os.getenv("OPENAI_API_KEY")
         )
         
-        # Generate embeddings
-        print(f"Generating embeddings for {len(chunks)} chunks...")
+        # Generate vectors
         vectors = embeddings.embed_documents(chunks)
-        print(f"Generated embeddings with dimension: {len(vectors[0])}")
+        vector_dim = len(vectors[0])
         
         # Initialize Qdrant client
         client = QdrantClient(path="qdrant_local")
@@ -53,11 +56,11 @@ def store_vectors(payload: Dict[str, Any]) -> int:
             )
         )
         
-        # Create points for storage
+        # Format points
         points = [
             PointStruct(
                 id=str(uuid.uuid4()),
-                vector=vectors[i],
+                vector=[float(x) for x in vectors[i]],  # ensure float32
                 payload={
                     "text": chunks[i],
                     "chunk_index": i,
@@ -67,17 +70,77 @@ def store_vectors(payload: Dict[str, Any]) -> int:
             )
             for i in range(len(chunks))
         ]
-        
-        # Store in Qdrant
-        operation_info = client.upsert(collection_name="documents", points=points)
-        print(f"Upsert operation info: {operation_info}")
-        
-        print(f"Successfully stored {len(chunks)} chunks in Qdrant")
-        return len(chunks)
+
+        # Upsert into Qdrant
+        client.upsert(collection_name=COLLECTION_NAME, points=points)
+
+        return {
+            "status": "success",
+            "stored": len(chunks),
+            "collection": COLLECTION_NAME,
+            "dimension": vector_dim
+        }
         
     except Exception as e:
-        print(f"Error storing vectors: {str(e)}")
-        return f"Error storing vectors: {str(e)}"
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+    
+
+@tool("search_vectors")
+def search_vectors(query: str, limit: int = 5) -> str:
+    """
+    Search for similar text chunks using vector similarity.
+    
+    Args:
+        query: Search query text
+        limit: Maximum number of results to return (default: 5)
+        
+    Returns:
+        str: JSON string of search results
+    """
+    try:
+        # Initialize OpenAI embeddings
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return "Error: OPENAI_API_KEY environment variable not set"
+        
+        embeddings = OpenAIEmbeddings(
+            model="text-embedding-3-large",
+            openai_api_key=api_key
+        )
+        
+        # Generate query embedding
+        query_vector = embeddings.embed_query(query)
+        
+        # Initialize Qdrant client
+        client = QdrantClient(path="./qdrant_local")
+        
+        # Search for similar vectors
+        search_results, _ = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            limit=limit
+        )
+
+        
+        # Format results
+        results = []
+        for result in search_results:
+            results.append({
+                "score": result.score,
+                "text": result.payload.get("text", ""),
+                "document_id": result.payload.get("document_id", ""),
+                "chunk_index": result.payload.get("chunk_index", -1)
+            })
+        
+        return json.dumps(results, indent=2)
+        
+    except Exception as e:
+        error_msg = f"Error searching vectors: {str(e)}"
+        print(error_msg)
+        return error_msg
 
 
 def create_store_agent():

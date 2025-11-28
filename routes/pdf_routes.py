@@ -1,13 +1,17 @@
 """Routes for PDF processing endpoints."""
 
 import logging
+import os
+import subprocess
+import uuid
 from flask import Blueprint, request, current_app
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from services.pdf_service import PDFService
 from utils.response_formatter import success_response, error_response
-from processors import qdrant
+from agents import storing_agent
+from services.parser_service import repo_to_json
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +201,73 @@ def health_check() -> tuple:
 
 @pdf_bp.route('/chunks', methods=['GET'])
 def get_stored_chunks():
-    chunks = qdrant.get_all_chunks()
-    return {
-        "total": len(chunks),
-        "chunks": chunks
-    }
+    query = request.args.get("q", None)
+    
+    try:
+        result = storing_agent.search_vectors.invoke({"query": query})
+        return {"result": result}
+    
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+    
+
+@pdf_bp.route('/clone-and-generate', methods=['POST'])
+def clone_and_generate():
+    """
+    Clone a repository into cloned_repos using the original repo name,
+    then generate JSON using repo_to_json.
+    Expects JSON body: { "repo_url": "https://github.com/user/repo.git" }
+    """
+    try:
+        data = request.get_json()
+        repo_url = data.get('repo_url')
+
+        if not repo_url:
+            logger.error("Missing repo_url in request body")
+            return error_response("repo_url is required", 400)
+
+        # Ensure cloned_repos folder exists
+        base_dir = os.path.join(os.getcwd(), "cloned_repos")
+        os.makedirs(base_dir, exist_ok=True)
+
+        # Extract repo name from URL (strip .git if present)
+        repo_name = os.path.splitext(os.path.basename(repo_url))[0]
+        folder_path = os.path.join(base_dir, repo_name)
+
+         # Check if repo already exists
+        if os.path.exists(folder_path):
+            logger.info(f"Repository already present at {folder_path}, skipping clone.")
+        else:
+            # Clone repo
+            try:
+                subprocess.run([r"C:\Program Files\Git\cmd\git.exe", "clone", repo_url, folder_path],check=True)
+                logger.info(f"Repository cloned successfully into {folder_path}")
+            except FileNotFoundError:
+                logger.exception("Git executable not found")
+                return error_response("Git is not installed or not found in PATH.", 500)
+            except subprocess.CalledProcessError as e:
+                logger.exception("Failed to clone repository")
+                return error_response(f"Failed to clone repo: {str(e)}", 500)
+
+        # Generate JSON from cloned repo
+        try:
+            json_output = repo_to_json("cloned_repos")
+        except Exception as e:
+            logger.exception("Error generating JSON from repo")
+            return error_response(f"Failed to generate JSON: {str(e)}", 500)
+
+        return {
+            "repo": repo_name,
+            **json_output
+        }
+
+    except subprocess.CalledProcessError as e:
+        logger.exception("Failed to clone repository")
+        return error_response(f"Failed to clone repo: {str(e)}", 500)
+
+    except Exception as e:
+        logger.exception("Unexpected error during clone+generate")
+        return error_response(str(e), 500)

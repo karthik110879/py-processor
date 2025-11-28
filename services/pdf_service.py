@@ -400,17 +400,36 @@ class PDFService:
             # ➜ STORE CHUNKS IN CHROMA DB
             if content:
                 try:
-                    chunked_data = chunking_agent.chunk_text.invoke({"text": content})
-                    print(f"Chunked data: {chunked_data}")
+                    # chunked_data = chunking_agent.create_chunking_agent().invoke({"input": content})
+                    # agent = chunking_agent.create_chunking_agent()
+                    # response = agent.invoke({
+                    #     "messages": [{
+                    #             "role": "user",
+                    #             "content": content
+                    #         }]
+                    # })
 
-                    stored_count = storing_agent.create_store_agent().invoke({
+                    # output_text = "\n".join(response["structured_response"].chunks)
+                    # print("Chunked data:", chunked_data)
+                    # stored_count = storing_agent.create_store_agent().invoke({
+                    #     "payload": {
+                    #         "chunks": chunked_data
+                    #     }
+                    # })
+                    chunk_agent_response = chunking_agent.chunk_text.invoke({
+                        "content": content,
+                    })
+                    print("Chunked data:", chunk_agent_response["chunks"])
+
+                    store_agent_response = storing_agent.store_vectors.invoke({
                         "payload": {
-                            "chunks": chunked_data
+                            "chunks": chunk_agent_response["chunks"]
                         }
                     })
-                    print(f"Stored {stored_count} chunks into Qdrant DB")
-                    logger.info(f"Stored {stored_count} chunks into Qdrant DB")
-                    result_data["chunks_count"] = stored_count
+                    print("Stored chunks count:", store_agent_response)
+                    print(f"Stored {store_agent_response} chunks into Qdrant DB")
+                    logger.info(f"Stored {store_agent_response} chunks into Qdrant DB")
+                    result_data["chunks"] = chunk_agent_response["chunks"]
                 except Exception as e:
                     logger.error(f"Failed to store chunks in Qdrant DB: {str(e)}")
                         
