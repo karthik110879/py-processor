@@ -1,0 +1,365 @@
+Enable an autonomous (or human-in-the-loop) agent to analyze a repository PKG, plan a code change (e.g., modify login flow), make minimal safe edits, run tests & checks, produce a changelog/summary, and create a PR or patch.
+
+
+High-level architecture (components)
+
+Chat Interface — where user asks (chatbot / web UI / Slack).
+
+Intent Router — converts natural-language request into structured intent (e.g., change_login_flow, priority, constraints, human-approval required?).
+
+PKG Query Engine — queries the Project Knowledge Graph to find impacted modules/symbols/endpoints.
+
+Analyzer / Impact Assessor — creates a change plan (files, functions, tests to touch) using graph + code summaries.
+
+Planner (LLM) — generates step-by-step patch plan with tasks and test expectations.
+
+Code Edit Executor — applies edits (codemods, AST transforms, or direct file edits), creates git branch, runs git operations.
+
+Test Runner & Static Analyzer — runs unit tests, linters, typechecks, build, optional sandbox run.
+
+Verifier — compares test results to acceptance criteria, runs security scans.
+
+PR Creator / Patch Exporter — creates commit(s), opens PR or returns patch/summary.
+
+Responder — returns change summary, diff, test results, and next steps to the user.
+
+Diagram (text):
+User Chat → Intent Router → PKG Query → Analyzer → Planner → Code Edit Executor → Test Runner → Verifier → PR Creator → User
+
+Detailed agent workflow (step-by-step for “change login flow”)
+
+Use this exact flow for each change request. Each step includes what to call, expected outputs, and acceptance checks.
+
+Intent Extraction
+
+Input: user text (e.g., “Change login to require 2FA and email verification”).
+
+Output: structured intent JSON:
+
+{
+  "intent": "change_login_flow",
+  "description": "require 2FA + email verification on login",
+  "risk": "medium",
+  "tests_required": ["unit","integration"],
+  "human_approval": true
+}
+
+
+Accept if intent parsed; else ask clarifying Q (or abort if agent-only).
+
+Scope Discovery (PKG Query)
+
+Query PKG for:
+
+modules tagged auth, login, jwt, auth middleware, user service
+
+endpoints under /login, /auth, /signup, etc.
+
+Output: list of moduleIds, symbolIds, endpointIds, file paths and moduleSummary.
+
+Example query: get_modules_by_tag("auth") → returns m_auth_service, m_auth_controller, etc.
+
+Impact Analysis
+
+Build a transitive closure of dependencies: find callers of auth service, tests covering it, DB entities used.
+
+Output: impacted files and tests, risk score (based on fan-in/out, test coverage).
+
+Acceptance: if impacted files > threshold, set human_approval=true.
+
+Draft Change Plan (Planner LLM)
+
+Input: intent + impacted nodes + constraints (no breaking public API unless allowed).
+
+Output: ordered task list:
+
+Add 2FA fields to User entity and migrations (or store in separate table).
+
+Add email verification flag, endpoints to request/resend verification email.
+
+Modify login flow: step1 validate credentials; if not verified -> reject with code; if 2FA enabled -> issue OTP flow.
+
+Update AuthService methods and Controller endpoints.
+
+Add/extend unit tests & integration tests.
+
+Update docs and API specs.
+
+Accept if plan lists files to change and tests to add.
+
+Human Approval (if required)
+
+Present plan to user: show changes summary, estimated risk, list of modified files.
+
+If user approves, continue. Otherwise abort or revise.
+
+Implement Changes
+
+Create new git branch: git checkout -b feat/login-2fa-<issue>
+
+For each planned edit:
+
+Use AST-aware editing tool (preferred) or codemod:
+
+Python: libCST, bowler, or tree-sitter-based edits.
+
+TS: ts-morph (preferred) or jscodeshift.
+
+Java/C#/C++: language-specific refactor SDKs (JavaParser, Roslyn, clang tooling).
+
+Commit granularly with meaningful messages:
+
+feat(auth): add 2FA field to User entity
+
+feat(auth): update AuthService to support 2FA
+
+test(auth): add login 2FA tests
+
+Generate patch/diff and store as artifact.
+
+Run Tests & Static Checks
+
+Commands:
+
+npm ci && npm test (for JS/TS)
+
+pytest -q (Python)
+
+mvn -DskipTests=false test (Java)
+
+dotnet test (C#)
+
+Also run linter and type checks and build steps.
+
+Collect results and logs.
+
+Verify Acceptance
+
+Acceptance criteria:
+
+All unit tests pass.
+
+New tests for login flow pass.
+
+No new lint/type errors.
+
+Security scan (SAST) passes or reports addressed items.
+
+If tests fail:
+
+Agent re-enters implement-debug loop (max N retries), or fail and create candidate patch for human review.
+
+Create PR / Produce Patch
+
+If pass and human approval given:
+
+Push branch origin/feat/login-2fa-<issue>
+
+Create PR with:
+
+Title, description, list of changed files, test summary, migration notes, rollout plan, rollback plan.
+
+Add reviewers and labels.
+
+Else produce patch + diff + summary to user for manual application.
+
+Summarize & Close Loop
+
+Provide final summary:
+
+What changed (files, symbols)
+
+Test results
+
+Link to PR / patch download
+
+Risks and next steps (deploy to staging, perform e2e)
+
+Optionally run a small smoke test script (if safe) against a disposable environment.
+
+Concrete LLM prompt templates
+
+Use these for Planner and Code Editor steps.
+
+Planner prompt (short)
+You are a code-change planner. Given:
+- Intent: <intent_text>
+- Impacted modules: <list with moduleId, path, summary>
+- Constraints: <constraints>
+
+Produce a numbered plan of code edits with:
+- Files to modify (path)
+- Specific changes (add field, update method signature, call new function)
+- Tests to add/change (file + test name)
+- Migration steps if DB changes
+- CI changes required
+Return JSON: { "plan": [ { "task": "...", "files": [...], "tests": [...], "notes": "..." } ] }
+
+Code-edit prompt (for each task)
+You are a code-edit assistant. Given:
+- File path: <path>
+- Current file content: <<<file contents>>>
+- Edit instructions: <precise edit steps>
+- Style guide / lint rules: <if any>
+
+Return:
+- Modified file content only (no prose)
+- A compact patch/diff format if possible
+Test-generation prompt
+Generate unit tests for <function/class> given its signature and behavior <summary>. Use the repo's testing framework <pytest/jest/mstest>. Provide file path and content.
+
+Tools & implementation details
+
+AST-aware editors (preferred):
+
+TypeScript: ts-morph or jscodeshift (AST safe)
+
+Python: libCST (preserves formatting), bowler, or tree-sitter edit library
+
+Java: JavaParser or Eclipse JDT
+
+C#: Roslyn (code fix providers)
+
+C/C++: clang-tooling (libTooling), or sed + careful patterns for simple edits (avoid if risky)
+
+Git flow:
+
+Branch naming standard: feat/<scope>-<short>; include issue ID if present.
+
+Commit messages conventional (Conventional Commits).
+
+Push and open PR via GitHub/GitLab APIs (use tokens).
+
+Test runner orchestration:
+
+Use Docker for language-specific envs, or existing repo toolchain.
+
+Fail fast on build failure.
+
+Sandboxing:
+
+Run tests inside containers with resource/time limits.
+
+Never run untrusted binaries from repo directly.
+
+Diff/patch format:
+
+Provide both git diff and unified patch .patch file.
+
+Change visibility:
+
+Always provide a human-readable summary + unified diff.
+
+Safety & guardrails
+
+Never execute untrusted code outside a sandbox.
+
+Secrets: detect secrets in repo; redact and fail if any appear in edits or outputs.
+
+Human approval thresholds:
+
+High risk if > X modules impacted or migration required → require approval.
+
+Low risk (single-file change, covered by unit tests) → auto-apply if configured.
+
+Max automated retries: e.g., 2 rework attempts before halt.
+
+Transactionality:
+
+Don’t modify upstream until tests pass and approval given.
+
+Always create branch with small commits for easy rollback.
+
+Acceptance criteria for a successful “change login flow” run
+
+Agent produced a clear plan showing files and tests to change.
+
+Changes applied on a git branch and pushed.
+
+All unit tests (existing + new) pass locally in the sandbox.
+
+Linter and type checks pass.
+
+PR opened with description, tests summary, and migration steps.
+
+Human review requested (if required) and summary presented to the user.
+
+Example: Minimal concrete sequence for your system
+
+User: “Make login require email verification and log attempt”
+
+Agent creates intent JSON.
+
+Agent queries PKG → finds m_auth_service, m_user_entity, m_auth_controller, tests tests/test_auth.py.
+
+Planner LLM returns plan of 6 tasks.
+
+Agent requests approval (shows plan + impacted files).
+
+User approves.
+
+Agent runs edits via libCST/ts-morph.
+
+Agent commits, runs tests (pytest).
+
+Tests pass → pushes branch → opens PR.
+
+Agent replies with PR link and summary.
+
+Practical engineering tasks to implement next (immediate next dev tasks)
+
+Build PKG Query API — implement functions: get_modules_by_tag(tag), get_impacted_modules(moduleIds, depth), get_endpoints_by_path(path). (Files: pkg/query.py)
+
+Implement Planner integration — LLM-based planner that ingests intent + PKG output and produces a task JSON (use the Planner prompt above). (Files: agents/planner.py)
+
+Add AST-edit wrappers — implement small adapter that calls libCST for Python and ts-morph for TS to apply edits and return unified diffs. (Files: editors/python_editor.py, editors/ts_editor.py)
+
+CI-safe Test Runner — containerized test runner that runs language-specific test commands and returns structured results. (Files: runner/docker-runner.py, docker images)
+
+PR Creator & Approval UI — script to create branch, push, and open PR with template, and to gather human approvals. (Files: gitops/pr_creator.py)
+
+
+Useful templates (commit & PR)
+
+Commit:
+
+feat(auth): require email verification during login
+
+- Add `isEmailVerified` flag to User entity
+- Update AuthService.login to check email verification and return 403 if not verified
+- Add unit tests for login flow
+
+
+PR body template:
+
+Title: feat(auth): require email verification during login
+
+Summary:
+- Adds email verified check to login flow.
+- New tests added: tests/test_auth_email_verification.py
+
+Files changed:
+- src/auth/auth.service.ts
+- src/users/user.entity.ts
+- tests/test_auth_email_verification.py
+
+Testing:
+- All unit tests passed (N total).
+- Lint and type checks passed.
+
+Migration:
+- Add DB migration: `ALTER TABLE users ADD COLUMN is_email_verified boolean DEFAULT false;`
+
+Rollback:
+- Revert branch `git revert <commit>`
+
+Reviewer notes:
+- Focus on AuthService changes and migration.
+
+Metrics & monitoring (post-merge)
+
+Track test coverage for changed files.
+
+Add smoke e2e in staging that exercises login flow.
+
+Monitor auth error rates and user support tickets after release.

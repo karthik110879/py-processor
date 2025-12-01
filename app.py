@@ -2,6 +2,7 @@
 
 import logging
 import os
+from datetime import datetime
 from flask import Flask
 from dotenv import load_dotenv
 
@@ -18,6 +19,14 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Import SocketIO for WebSocket support
+try:
+    from flask_socketio import SocketIO
+    socketio = None  # Will be initialized in create_app
+except ImportError:
+    SocketIO = None
+    logger.warning("flask-socketio not installed, WebSocket support disabled")
 
 
 def create_app() -> Flask:
@@ -41,8 +50,74 @@ def create_app() -> Flask:
     except ImportError:
         logger.warning("flask-cors not installed, CORS disabled")
     
+    # Health check endpoint
+    @app.route('/health', methods=['GET'])
+    def health_check():
+        """Health check endpoint to verify server is running."""
+        global socketio
+        return {
+            'status': 'healthy',
+            'websocket_enabled': socketio is not None,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    
+    # WebSocket status endpoint
+    @app.route('/ws/status', methods=['GET'])
+    def ws_status():
+        """Check WebSocket server status."""
+        global socketio
+        try:
+            from routes.chat_routes import active_sessions
+            return {
+                'websocket_enabled': socketio is not None,
+                'active_sessions': len(active_sessions),
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            return {
+                'websocket_enabled': socketio is not None,
+                'active_sessions': 0,
+                'error': str(e),
+                'timestamp': datetime.utcnow().isoformat()
+            }
+    
     # Register blueprints
     app.register_blueprint(pdf_bp)
+    
+    # Initialize SocketIO for WebSocket support
+    global socketio
+    if SocketIO is not None:
+        # Get CORS origins - support both wildcard and specific origins
+        cors_origins_env = os.getenv('WEBSOCKET_CORS_ORIGINS', '*')
+        if cors_origins_env == '*':
+            cors_origins = '*'
+        else:
+            # Support comma-separated list of origins
+            cors_origins = [origin.strip() for origin in cors_origins_env.split(',')]
+        
+        async_mode = os.getenv('WEBSOCKET_ASYNC_MODE', 'eventlet')
+        socketio = SocketIO(
+            app, 
+            cors_allowed_origins=cors_origins, 
+            async_mode=async_mode,
+            logger=True,
+            engineio_logger=True
+        )
+        logger.info(f"SocketIO initialized with CORS origins: {cors_origins}, async_mode: {async_mode}")
+        
+        # Register chat routes
+        try:
+            from routes.chat_routes import register_chat_events
+            register_chat_events(socketio)
+            logger.info("Chat routes registered successfully")
+        except ImportError as e:
+            logger.error(f"Failed to import chat routes: {e}", exc_info=True)
+            logger.warning("Chat routes not available - WebSocket will not function properly")
+        except Exception as e:
+            logger.error(f"Failed to register chat routes: {e}", exc_info=True)
+    else:
+        socketio = None
+        logger.warning("SocketIO not available, WebSocket features disabled")
     
     # Error handlers
     @app.errorhandler(400)
@@ -96,11 +171,11 @@ def main() -> None:
     
     logger.info(f"Starting Flask server on {host}:{port} (debug={debug})")
     
-    app.run(
-        host=host,
-        port=port,
-        debug=debug
-    )
+    # Use SocketIO.run if available, otherwise fall back to app.run
+    if socketio is not None:
+        socketio.run(app, host=host, port=port, debug=debug)
+    else:
+        app.run(host=host, port=port, debug=debug)
 
 
 if __name__ == '__main__':
