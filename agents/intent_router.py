@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 class IntentSchema(BaseModel):
     """Structured intent schema."""
+    intent_category: str = Field(description="Category: informational_query, diagram_request, or code_change")
     intent: str = Field(description="Intent type: change_login_flow, add_feature, fix_bug, refactor, or other")
     description: str = Field(description="Human-readable description of the intent")
     risk: str = Field(description="Risk level: low, medium, or high")
@@ -85,25 +86,32 @@ class IntentRouter:
 
 User request: {user_message}
 
-Extract:
-1. Intent type (change_login_flow, add_feature, fix_bug, refactor, or other)
-2. Description (human-readable summary)
-3. Risk level (low/medium/high based on scope and complexity)
-4. Required tests (unit, integration, e2e)
-5. Whether human approval is needed (true if high risk or major changes)
-6. Any constraints mentioned (e.g., "no breaking changes", "maintain backward compatibility")
-7. Target modules (optional hints like "auth", "user", "payment" if mentioned)
+First, classify the request into one of these categories:
+- informational_query: Questions asking "what", "how", "explain", "describe", "show", "tell", "list" (e.g., "what is this project about", "explain module X", "list dependencies")
+- diagram_request: Requests for visualizations like "diagram", "visualize", "graph", "show dependencies", "create diagram"
+- code_change: Requests to modify code like "implement", "add", "fix", "create", "modify", "refactor", "change"
+
+Then extract:
+1. Intent category (informational_query, diagram_request, or code_change)
+2. Intent type (for code_change: change_login_flow, add_feature, fix_bug, refactor, or other; for others: descriptive string)
+3. Description (human-readable summary)
+4. Risk level (low/medium/high - only relevant for code_change, use "low" for queries/diagrams)
+5. Required tests (unit, integration, e2e - only for code_change)
+6. Whether human approval is needed (true if high risk or major changes - only for code_change)
+7. Any constraints mentioned (e.g., "no breaking changes", "maintain backward compatibility")
+8. Target modules (optional hints like "auth", "user", "payment" if mentioned)
 
 Return a JSON object with these fields:
+- intent_category: "informational_query" | "diagram_request" | "code_change"
 - intent: string
 - description: string
 - risk: "low" | "medium" | "high"
-- tests_required: array of strings
-- human_approval: boolean
+- tests_required: array of strings (empty for informational/diagram requests)
+- human_approval: boolean (false for informational/diagram requests)
 - constraints: array of strings
 - target_modules: array of strings
 
-Be specific and accurate. If the intent is unclear, use "other" and provide a detailed description."""
+Be specific and accurate. If the intent is unclear, use "code_change" category with "other" intent and provide a detailed description."""
 
         try:
             response = self.llm.invoke(prompt)
@@ -151,25 +159,49 @@ Be specific and accurate. If the intent is unclear, use "other" and provide a de
         """
         message_lower = user_message.lower()
         
-        # Determine intent type
-        if any(word in message_lower for word in ['login', 'auth', 'authentication', 'sign in']):
-            intent_type = "change_login_flow"
-        elif any(word in message_lower for word in ['add', 'create', 'new', 'implement']):
-            intent_type = "add_feature"
-        elif any(word in message_lower for word in ['fix', 'bug', 'error', 'issue']):
-            intent_type = "fix_bug"
-        elif any(word in message_lower for word in ['refactor', 'restructure', 'reorganize']):
-            intent_type = "refactor"
-        else:
-            intent_type = "other"
+        # First, determine intent category
+        informational_keywords = ['what', 'how', 'explain', 'describe', 'show', 'tell', 'list', 'what are', 'what is']
+        diagram_keywords = ['diagram', 'visualize', 'graph', 'dependencies', 'show dependencies', 'create diagram', 'draw']
+        code_change_keywords = ['implement', 'add', 'fix', 'create', 'modify', 'refactor', 'change', 'update', 'remove']
         
-        # Determine risk (simple heuristic)
-        if len(user_message.split()) > 50 or any(word in message_lower for word in ['major', 'significant', 'large']):
-            risk = "high"
-        elif len(user_message.split()) > 20:
-            risk = "medium"
-        else:
+        if any(keyword in message_lower for keyword in informational_keywords):
+            intent_category = "informational_query"
+            intent_type = "information_request"
             risk = "low"
+            tests_required = []
+            human_approval = False
+        elif any(keyword in message_lower for keyword in diagram_keywords):
+            intent_category = "diagram_request"
+            intent_type = "diagram_generation"
+            risk = "low"
+            tests_required = []
+            human_approval = False
+        else:
+            # Default to code_change
+            intent_category = "code_change"
+            
+            # Determine intent type for code changes
+            if any(word in message_lower for word in ['login', 'auth', 'authentication', 'sign in']):
+                intent_type = "change_login_flow"
+            elif any(word in message_lower for word in ['add', 'create', 'new', 'implement']):
+                intent_type = "add_feature"
+            elif any(word in message_lower for word in ['fix', 'bug', 'error', 'issue']):
+                intent_type = "fix_bug"
+            elif any(word in message_lower for word in ['refactor', 'restructure', 'reorganize']):
+                intent_type = "refactor"
+            else:
+                intent_type = "other"
+            
+            # Determine risk (simple heuristic) - only for code changes
+            if len(user_message.split()) > 50 or any(word in message_lower for word in ['major', 'significant', 'large']):
+                risk = "high"
+            elif len(user_message.split()) > 20:
+                risk = "medium"
+            else:
+                risk = "low"
+            
+            tests_required = ["unit", "integration"] if risk != "low" else ["unit"]
+            human_approval = risk in ["medium", "high"]
         
         # Extract target modules
         target_modules = []
@@ -181,11 +213,12 @@ Be specific and accurate. If the intent is unclear, use "other" and provide a de
             target_modules.append('payment')
         
         return {
+            "intent_category": intent_category,
             "intent": intent_type,
             "description": user_message[:200],  # Truncate if too long
             "risk": risk,
-            "tests_required": ["unit", "integration"] if risk != "low" else ["unit"],
-            "human_approval": risk in ["medium", "high"],
+            "tests_required": tests_required,
+            "human_approval": human_approval,
             "constraints": [],
             "target_modules": target_modules
         }
@@ -200,8 +233,15 @@ Be specific and accurate. If the intent is unclear, use "other" and provide a de
         Returns:
             Normalized intent dictionary
         """
+        # Determine intent category (default to code_change for backward compatibility)
+        intent_category = intent_dict.get("intent_category", "code_change")
+        valid_categories = ["informational_query", "diagram_request", "code_change"]
+        if intent_category not in valid_categories:
+            intent_category = "code_change"
+        
         # Ensure all required fields exist
         normalized = {
+            "intent_category": intent_category,
             "intent": intent_dict.get("intent", "other"),
             "description": intent_dict.get("description", ""),
             "risk": intent_dict.get("risk", "medium"),
@@ -211,10 +251,17 @@ Be specific and accurate. If the intent is unclear, use "other" and provide a de
             "target_modules": intent_dict.get("target_modules", [])
         }
         
-        # Validate intent type
-        valid_intents = ["change_login_flow", "add_feature", "fix_bug", "refactor", "other"]
-        if normalized["intent"] not in valid_intents:
-            normalized["intent"] = "other"
+        # For informational/diagram requests, set appropriate defaults
+        if intent_category in ["informational_query", "diagram_request"]:
+            normalized["risk"] = "low"
+            normalized["tests_required"] = []
+            normalized["human_approval"] = False
+        
+        # Validate intent type (only for code_change category)
+        if intent_category == "code_change":
+            valid_intents = ["change_login_flow", "add_feature", "fix_bug", "refactor", "other"]
+            if normalized["intent"] not in valid_intents:
+                normalized["intent"] = "other"
         
         # Validate risk level
         valid_risks = ["low", "medium", "high"]

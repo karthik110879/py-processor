@@ -101,17 +101,78 @@ class AgentOrchestrator:
             self.sessions[session_id]['repo_path'] = repo_path
             self.sessions[session_id]['pkg_data'] = pkg_data
             
-            # Execute workflow if repo and PKG are available
-            if repo_path and pkg_data:
-                self._execute_workflow(
-                    intent, pkg_data, repo_path, session_id, socketio, sid
-                )
+            # Route based on intent category
+            intent_category = intent.get('intent_category', 'code_change')
+            
+            if intent_category == 'informational_query':
+                # Handle informational queries - may need PKG but not repo_path
+                if not pkg_data and repo_url:
+                    # Try to load PKG if repo_url provided
+                    repo_path, pkg_data = self._ensure_repo_loaded(
+                        session_id, repo_url, socketio, sid
+                    )
+                    if pkg_data:
+                        self.sessions[session_id]['pkg_data'] = pkg_data
+                
+                if pkg_data:
+                    self._handle_informational_query(
+                        user_message, intent, pkg_data, session_id, socketio, sid
+                    )
+                else:
+                    self._stream_update(
+                        socketio, sid, "error", "query_handling",
+                        {"message": "PKG data is required to answer queries. Please provide a repository URL."},
+                        session_id
+                    )
+                return
+            
+            elif intent_category == 'diagram_request':
+                # Handle diagram requests - may need PKG but not repo_path
+                if not pkg_data and repo_url:
+                    # Try to load PKG if repo_url provided
+                    repo_path, pkg_data = self._ensure_repo_loaded(
+                        session_id, repo_url, socketio, sid
+                    )
+                    if pkg_data:
+                        self.sessions[session_id]['pkg_data'] = pkg_data
+                
+                if pkg_data:
+                    self._handle_diagram_request(
+                        user_message, intent, pkg_data, session_id, socketio, sid
+                    )
+                else:
+                    self._stream_update(
+                        socketio, sid, "error", "diagram_generation",
+                        {"message": "PKG data is required to generate diagrams. Please provide a repository URL."},
+                        session_id
+                    )
+                return
+            
+            elif intent_category == 'code_change':
+                # Execute full workflow for code changes
+                if repo_path and pkg_data:
+                    self._execute_workflow(
+                        intent, pkg_data, repo_path, session_id, socketio, sid
+                    )
+                else:
+                    self._stream_update(
+                        socketio, sid, "status", "waiting",
+                        {"message": "Please provide a repository URL to proceed with code changes"},
+                        session_id
+                    )
             else:
-                self._stream_update(
-                    socketio, sid, "status", "waiting",
-                    {"message": "Please provide a repository URL to proceed with code changes"},
-                    session_id
-                )
+                # Fallback to code_change for unknown categories
+                logger.warning(f"Unknown intent category: {intent_category}, defaulting to code_change")
+                if repo_path and pkg_data:
+                    self._execute_workflow(
+                        intent, pkg_data, repo_path, session_id, socketio, sid
+                    )
+                else:
+                    self._stream_update(
+                        socketio, sid, "status", "waiting",
+                        {"message": "Please provide a repository URL to proceed with code changes"},
+                        session_id
+                    )
         
         except Exception as e:
             logger.error(f"Error processing user request: {e}", exc_info=True)
@@ -632,6 +693,114 @@ class AgentOrchestrator:
             self._stream_update(
                 socketio, sid, "error", "execution",
                 {"message": f"Execution error: {str(e)}"},
+                session_id
+            )
+    
+    def _handle_informational_query(
+        self,
+        user_message: str,
+        intent: Dict[str, Any],
+        pkg_data: Dict[str, Any],
+        session_id: str,
+        socketio: SocketIO,
+        sid: str
+    ) -> None:
+        """
+        Handle informational queries without executing the full workflow.
+        
+        Args:
+            user_message: User's question
+            intent: Extracted intent dictionary
+            pkg_data: PKG data dictionary
+            session_id: Session identifier
+            socketio: SocketIO instance
+            sid: Socket session ID
+        """
+        try:
+            self._stream_update(
+                socketio, sid, "status", "query_handling",
+                {"message": "Processing your question..."},
+                session_id
+            )
+            
+            from agents.query_handler import QueryHandler
+            from services.pkg_query_engine import PKGQueryEngine
+            
+            query_engine = PKGQueryEngine(pkg_data)
+            query_handler = QueryHandler(pkg_data, query_engine)
+            
+            result = query_handler.answer_query(user_message, intent)
+            
+            self._stream_update(
+                socketio, sid, "query_response", "query_handling",
+                {
+                    "answer": result.get('answer', ''),
+                    "references": result.get('references', []),
+                    "metadata": result.get('metadata', {})
+                },
+                session_id
+            )
+            
+        except Exception as e:
+            logger.error(f"Error handling informational query: {e}", exc_info=True)
+            self._stream_update(
+                socketio, sid, "error", "query_handling",
+                {"message": f"Failed to process query: {str(e)}"},
+                session_id
+            )
+    
+    def _handle_diagram_request(
+        self,
+        user_message: str,
+        intent: Dict[str, Any],
+        pkg_data: Dict[str, Any],
+        session_id: str,
+        socketio: SocketIO,
+        sid: str
+    ) -> None:
+        """
+        Handle diagram generation requests without executing the full workflow.
+        
+        Args:
+            user_message: User's diagram request
+            intent: Extracted intent dictionary
+            pkg_data: PKG data dictionary
+            session_id: Session identifier
+            socketio: SocketIO instance
+            sid: Socket session ID
+        """
+        try:
+            self._stream_update(
+                socketio, sid, "status", "diagram_generation",
+                {"message": "Generating diagram..."},
+                session_id
+            )
+            
+            from agents.diagram_generator import DiagramGenerator
+            from services.pkg_query_engine import PKGQueryEngine
+            
+            query_engine = PKGQueryEngine(pkg_data)
+            diagram_generator = DiagramGenerator(pkg_data, query_engine)
+            
+            result = diagram_generator.generate_diagram(intent, user_message)
+            
+            self._stream_update(
+                socketio, sid, "diagram_response", "diagram_generation",
+                {
+                    "diagram_type": result.get('diagram_type', 'dependency'),
+                    "format": result.get('format', 'text'),
+                    "content": result.get('content', ''),
+                    "modules_included": result.get('modules_included', []),
+                    "metadata": result.get('metadata', {})
+                },
+                session_id
+            )
+            
+        except Exception as e:
+            logger.error(f"Error handling diagram request: {e}", exc_info=True)
+            self._stream_update(
+                socketio, sid, "error", "diagram_generation",
+                {"message": f"Failed to generate diagram: {str(e)}"},
                 session_id
             )
     

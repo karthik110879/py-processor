@@ -234,7 +234,12 @@ class PKGGenerator:
                 # Extract methods
                 methods = cls.get("methods", [])
                 for method in methods:
-                    method_name = method.get("name") or method  # Handle string or dict
+                    # Handle both string and dict formats
+                    if isinstance(method, dict):
+                        method_name = method.get("name")
+                    else:
+                        method_name = method
+                    
                     if isinstance(method_name, str):
                         method_symbol_id = self._generate_symbol_id(module_id, f"{cls_name}.{method_name}")
                         

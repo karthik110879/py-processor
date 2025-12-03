@@ -10,18 +10,21 @@ logger = logging.getLogger(__name__)
 class PKGQueryEngine:
     """Query engine for Project Knowledge Graph (PKG) data."""
     
-    def __init__(self, pkg_data: Dict[str, Any]):
+    def __init__(self, pkg_data: Dict[str, Any], neo4j_engine=None):
         """
         Initialize query engine with PKG data.
         
         Args:
             pkg_data: Complete PKG dictionary
+            neo4j_engine: Optional Neo4jQueryEngine instance for complex queries
         """
         self.pkg_data = pkg_data
         self.modules = pkg_data.get('modules', [])
         self.symbols = pkg_data.get('symbols', [])
         self.endpoints = pkg_data.get('endpoints', [])
         self.edges = pkg_data.get('edges', [])
+        self.neo4j_engine = neo4j_engine
+        self.project_id = pkg_data.get('project', {}).get('id', '')
         
         # Build lookup indices for performance
         self._module_by_id: Dict[str, Dict[str, Any]] = {}
@@ -113,6 +116,8 @@ class PKGQueryEngine:
         """
         Build transitive closure of dependencies for given modules.
         
+        Uses Neo4j if available for better performance on complex queries.
+        
         Args:
             module_ids: List of starting module IDs
             depth: Maximum depth to traverse (default: 2)
@@ -120,6 +125,24 @@ class PKGQueryEngine:
         Returns:
             Dictionary with impacted_modules, impacted_files, and dependency graph
         """
+        # Use Neo4j if available for complex transitive queries
+        if self.neo4j_engine and self.project_id:
+            try:
+                result = self.neo4j_engine.get_impacted_modules(module_ids, depth)
+                # Convert Neo4j node objects to dictionaries if needed
+                if result.get("impacted_modules"):
+                    impacted_modules = []
+                    for mod in result["impacted_modules"]:
+                        if hasattr(mod, 'items'):
+                            impacted_modules.append(dict(mod))
+                        else:
+                            impacted_modules.append(mod)
+                    result["impacted_modules"] = impacted_modules
+                return result
+            except Exception as e:
+                logger.warning(f"Neo4j query failed, falling back to in-memory: {e}")
+        
+        # Fallback to in-memory implementation
         impacted_module_ids: Set[str] = set(module_ids)
         visited: Set[str] = set()
         
@@ -196,12 +219,28 @@ class PKGQueryEngine:
         """
         Get callers (fan-in) and callees (fan-out) for a module.
         
+        Uses Neo4j if available for better performance.
+        
         Args:
             module_id: Module ID to analyze
             
         Returns:
             Dictionary with callers, callees, fan_in_count, fan_out_count
         """
+        # Use Neo4j if available
+        if self.neo4j_engine:
+            try:
+                result = self.neo4j_engine.get_dependencies(module_id)
+                # Convert Neo4j node objects to dictionaries if needed
+                if result.get("callers"):
+                    result["callers"] = [dict(c) if hasattr(c, 'items') else c for c in result["callers"]]
+                if result.get("callees"):
+                    result["callees"] = [dict(c) if hasattr(c, 'items') else c for c in result["callees"]]
+                return result
+            except Exception as e:
+                logger.warning(f"Neo4j query failed, falling back to in-memory: {e}")
+        
+        # Fallback to in-memory implementation
         callers: Set[str] = set()  # Modules that call/import this module
         callees: Set[str] = set()   # Modules this module calls/imports
         

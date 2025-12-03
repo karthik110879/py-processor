@@ -11,15 +11,18 @@ logger = logging.getLogger(__name__)
 class ImpactAnalyzer:
     """Analyzes impact of proposed code changes using PKG data."""
     
-    def __init__(self, pkg_data: Dict[str, Any]):
+    def __init__(self, pkg_data: Dict[str, Any], neo4j_query_engine=None):
         """
         Initialize impact analyzer.
         
         Args:
             pkg_data: PKG data dictionary
+            neo4j_query_engine: Optional Neo4jQueryEngine instance for better impact analysis
         """
         self.pkg_data = pkg_data
-        self.query_engine = PKGQueryEngine(pkg_data)
+        self.neo4j_query_engine = neo4j_query_engine
+        # Initialize PKGQueryEngine with Neo4j backend if available
+        self.query_engine = PKGQueryEngine(pkg_data, neo4j_engine=neo4j_query_engine)
     
     def analyze_impact(
         self,

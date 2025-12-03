@@ -21,9 +21,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import SocketIO for WebSocket support
+socketio = None  # Will be initialized in create_app
 try:
     from flask_socketio import SocketIO
-    socketio = None  # Will be initialized in create_app
 except ImportError:
     SocketIO = None
     logger.warning("flask-socketio not installed, WebSocket support disabled")
@@ -178,6 +178,7 @@ def main() -> None:
     logger.info(f"Starting Flask server on {host}:{port} (debug={debug})")
     
     # Use SocketIO.run if available, otherwise fall back to app.run
+    global socketio
     if socketio is not None:
         socketio.run(app, host=host, port=port, debug=debug)
     else:
