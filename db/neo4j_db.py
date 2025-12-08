@@ -73,7 +73,38 @@ def _create_indexes(driver_instance: GraphDatabase.driver) -> None:
             session.run("CREATE INDEX IF NOT EXISTS FOR (e:Endpoint) ON (e.id)")
             session.run("CREATE INDEX IF NOT EXISTS FOR (f:Feature) ON (f.id)")
             session.run("CREATE INDEX IF NOT EXISTS FOR (pkg:Package) ON (pkg.id)")
+            session.run("CREATE INDEX IF NOT EXISTS FOR (pkg:Package) ON (pkg.projectId)")
             session.run("CREATE INDEX IF NOT EXISTS FOR (d:Document) ON (d.url)")
+            
+            # Module metrics indexes
+            session.run("CREATE INDEX IF NOT EXISTS FOR (m:Module) ON (m.centrality)")
+            session.run("CREATE INDEX IF NOT EXISTS FOR (m:Module) ON (m.complexity)")
+            
+            # Fulltext indexes for summaries
+            try:
+                session.run("""
+                    CREATE FULLTEXT INDEX module_summary_ft IF NOT EXISTS
+                    FOR (m:Module) ON EACH [m.moduleSummary]
+                """)
+                session.run("""
+                    CREATE FULLTEXT INDEX symbol_summary_ft IF NOT EXISTS
+                    FOR (s:Symbol) ON EACH [s.summary]
+                """)
+                logger.info("Fulltext indexes created/verified")
+            except Exception as e:
+                logger.warning(f"Fulltext indexes not supported or failed: {e}")
+            
+            # Vector index for embeddings (Neo4j 5.x+)
+            try:
+                embedding_dim = int(os.getenv("EMBEDDING_DIMENSION", "1536"))
+                session.run(f"""
+                    CREATE VECTOR INDEX symbol_embedding_index IF NOT EXISTS
+                    FOR (s:Symbol) ON s.embedding
+                    OPTIONS {{indexConfig: {{`vector.dimensions`: {embedding_dim}, `vector.similarity_function`: 'cosine'}}}}
+                """)
+                logger.info(f"Vector index created/verified (dimension: {embedding_dim})")
+            except Exception as e:
+                logger.warning(f"Vector index not supported or failed (Neo4j 5.x+ required): {e}")
             
             logger.info("Neo4j indexes created/verified")
     except Exception as e:
@@ -132,20 +163,67 @@ def get_session():
         session.close()
 
 
-def _store_package_tx(tx: Transaction, pkg: Dict[str, Any]) -> None:
-    """Transaction function to store Package node."""
+def _store_package_tx(tx: Transaction, pkg: Dict[str, Any]) -> str:
+    """
+    Transaction function to store Package node with versioning.
+    
+    Returns:
+        Package ID (versioned)
+    """
+    from datetime import datetime
+    
+    project_id = pkg["project"]["id"]
+    version_str = pkg.get("version", "1.0.0")
+    
+    # Auto-detect version strategy
+    if version_str and version_str != "1.0.0" and not version_str.startswith(project_id):
+        # Semantic versioning: use version as-is, create ID as {project_id}_v{version}
+        pkg_id = f"{project_id}_v{version_str}"
+    else:
+        # Timestamp-based versioning
+        timestamp = datetime.utcnow().isoformat()
+        pkg_id = f"{project_id}_{timestamp}"
+        version_str = timestamp
+    
     tx.run("""
-        MERGE (p:Package {id: $project_id})
-        SET p.version = $version,
+        MERGE (p:Package {id: $pkg_id})
+        SET p.projectId = $project_id,
+            p.version = $version,
             p.generatedAt = $generatedAt,
             p.gitSha = $gitSha,
             p.timestamp = datetime()
     """, {
-        "project_id": pkg["project"]["id"],
-        "version": pkg.get("version", "1.0.0"),
+        "pkg_id": pkg_id,
+        "project_id": project_id,
+        "version": version_str,
         "generatedAt": pkg.get("generatedAt"),
         "gitSha": pkg.get("gitSha")
     })
+    
+    return pkg_id
+
+
+def _link_package_versions_tx(tx: Transaction, pkg_id: str, project_id: str) -> None:
+    """Transaction function to link Package versions with VERSION_OF relationship."""
+    # Find previous version (latest by timestamp)
+    result = tx.run("""
+        MATCH (prev:Package {projectId: $project_id})
+        WHERE prev.id <> $pkg_id
+        RETURN prev
+        ORDER BY prev.timestamp DESC
+        LIMIT 1
+    """, {"pkg_id": pkg_id, "project_id": project_id})
+    
+    prev_record = result.single()
+    if prev_record:
+        prev_pkg = prev_record["prev"]
+        prev_id = prev_pkg.get("id")
+        # Create VERSION_OF relationship
+        tx.run("""
+            MATCH (new:Package {id: $new_id})
+            MATCH (prev:Package {id: $prev_id})
+            MERGE (new)-[:VERSION_OF]->(prev)
+        """, {"new_id": pkg_id, "prev_id": prev_id})
 
 
 def _store_project_tx(tx: Transaction, pkg: Dict[str, Any]) -> None:
@@ -183,12 +261,29 @@ def _store_project_tx(tx: Transaction, pkg: Dict[str, Any]) -> None:
     """, {"project_id": project_id})
 
 
-def _store_modules_tx(tx: Transaction, modules: List[Dict[str, Any]], project_id: str) -> None:
-    """Transaction function to store modules using UNWIND batch operation."""
+def _store_modules_tx(tx: Transaction, modules: List[Dict[str, Any]], project_id: str, edges: Optional[List[Dict[str, Any]]] = None) -> None:
+    """
+    Transaction function to store modules using UNWIND batch operation with precomputed metrics.
+    
+    Args:
+        tx: Neo4j transaction
+        modules: List of module dictionaries
+        project_id: Project ID
+        edges: Optional list of edges for calculating fan_in metrics
+    """
     if not modules:
         return
     
-    # Prepare module data for batch insert
+    # Build edge lookup for fan_in calculation
+    fan_in_map = {}
+    if edges:
+        for edge in edges:
+            if edge.get("type") == "imports":
+                to_id = edge.get("to")
+                if to_id:
+                    fan_in_map[to_id] = fan_in_map.get(to_id, 0) + 1
+    
+    # Prepare module data for batch insert with metrics
     module_data = []
     for m in modules:
         module_id = m.get("id")
@@ -196,22 +291,39 @@ def _store_modules_tx(tx: Transaction, modules: List[Dict[str, Any]], project_id
             logger.warning(f"Skipping module - missing id: {m}")
             continue
         
+        # Calculate metrics
+        fan_in = fan_in_map.get(module_id, 0)
+        imports_list = m.get("imports", [])
+        exports_list = m.get("exports", [])
+        fan_out = len(imports_list) if isinstance(imports_list, list) else 0
+        centrality = fan_in + fan_out
+        complexity = len(exports_list) if isinstance(exports_list, list) else 0
+        complexity += fan_out
+        
         # Filter out None values
         module_props = {k: v for k, v in m.items() if v is not None and k != "id"}
         module_data.append({
             "id": module_id,
             "data": module_props,
-            "projectId": project_id
+            "projectId": project_id,
+            "fan_in": fan_in,
+            "fan_out": fan_out,
+            "centrality": centrality,
+            "complexity": complexity
         })
     
     if not module_data:
         return
     
-    # Batch insert using UNWIND
+    # Batch insert using UNWIND with metrics
     tx.run("""
         UNWIND $modules AS module
         MERGE (mod:Module {id: module.id})
-        SET mod += module.data
+        SET mod += module.data,
+            mod.fan_in = module.fan_in,
+            mod.fan_out = module.fan_out,
+            mod.centrality = module.centrality,
+            mod.complexity = module.complexity
         WITH mod, module.projectId AS projectId
         MATCH (proj:Project {id: projectId})
         MERGE (proj)-[:HAS_MODULE]->(mod)
@@ -219,7 +331,7 @@ def _store_modules_tx(tx: Transaction, modules: List[Dict[str, Any]], project_id
 
 
 def _store_symbols_tx(tx: Transaction, symbols: List[Dict[str, Any]], project_id: str) -> None:
-    """Transaction function to store symbols using UNWIND batch operation."""
+    """Transaction function to store symbols using UNWIND batch operation with embedding support."""
     if not symbols:
         return
     
@@ -234,13 +346,22 @@ def _store_symbols_tx(tx: Transaction, symbols: List[Dict[str, Any]], project_id
                 logger.warning(f"Skipping symbol - missing id and name: {s}")
                 continue
         
-        # Filter out None values
-        symbol_props = {k: v for k, v in s.items() if v is not None and k not in ["id", "name"]}
+        # Extract embedding if present and valid
+        embedding = s.get("embedding")
+        if embedding is not None:
+            # Validate embedding is a list of numbers
+            if not isinstance(embedding, list) or not all(isinstance(x, (int, float)) for x in embedding):
+                logger.warning(f"Invalid embedding format for symbol {symbol_id}, skipping embedding")
+                embedding = None
+        
+        # Filter out None values (but keep embedding if it's an empty list)
+        symbol_props = {k: v for k, v in s.items() if v is not None and k not in ["id", "name", "embedding"]}
         symbol_data.append({
             "id": symbol_id,
             "name": s.get("name", ""),
             "data": symbol_props,
-            "projectId": project_id
+            "projectId": project_id,
+            "embedding": embedding  # Can be None or list of floats
         })
     
     if not symbol_data:
@@ -252,7 +373,9 @@ def _store_symbols_tx(tx: Transaction, symbols: List[Dict[str, Any]], project_id
         MERGE (sym:Symbol {id: symbol.id})
         SET sym.name = symbol.name,
             sym += symbol.data
-        WITH sym, symbol.projectId AS projectId
+        WITH sym, symbol.projectId AS projectId, symbol.embedding AS embedding
+        SET sym.embedding = CASE WHEN embedding IS NOT NULL THEN embedding ELSE sym.embedding END
+        WITH sym, projectId
         MATCH (proj:Project {id: projectId})
         MERGE (proj)-[:HAS_SYMBOL]->(sym)
     """, {"symbols": symbol_data})
@@ -419,23 +542,27 @@ def store_pkg(pkg: Dict[str, Any]) -> bool:
     try:
         with get_session() as session:
             try:
-                # Store Package node
+                # Store Package node (with versioning)
                 logger.debug(f"📦 STORING PACKAGE NODE | Project ID: {project_id}")
-                session.execute_write(_store_package_tx, pkg)
-                logger.debug(f"✅ PACKAGE NODE STORED | Project ID: {project_id}")
+                pkg_id = session.execute_write(_store_package_tx, pkg)
+                logger.debug(f"✅ PACKAGE NODE STORED | Project ID: {project_id} | Package ID: {pkg_id}")
+                
+                # Link package versions
+                session.execute_write(_link_package_versions_tx, pkg_id, project_id)
                 
                 # Store Project node
                 logger.debug(f"📋 STORING PROJECT NODE | Project ID: {project_id}")
                 session.execute_write(_store_project_tx, pkg)
                 logger.debug(f"✅ PROJECT NODE STORED | Project ID: {project_id}")
                 
-                # Batch store modules
+                # Batch store modules (with edges for metrics calculation)
                 modules = pkg.get("modules", [])
+                edges = pkg.get("edges", [])
                 if modules:
                     logger.info(f"📦 STORING MODULES | Project ID: {project_id} | Count: {len(modules)} | Batch size: {batch_size}")
                     for i in range(0, len(modules), batch_size):
                         batch = modules[i:i + batch_size]
-                        session.execute_write(_store_modules_tx, batch, project_id)
+                        session.execute_write(_store_modules_tx, batch, project_id, edges)
                     logger.info(f"✅ MODULES STORED | Project ID: {project_id} | Count: {len(modules)}")
                 
                 # Batch store symbols
@@ -528,6 +655,46 @@ def close_driver() -> None:
             driver = None
 
 
+def get_version_history(project_id: str) -> List[Dict[str, Any]]:
+    """
+    Get version history for a project.
+    
+    Args:
+        project_id: Project ID to get version history for
+        
+    Returns:
+        List of version dictionaries with version, timestamp, and generatedAt
+    """
+    logger.debug(f"📜 GETTING VERSION HISTORY | Project ID: {project_id}")
+    if not verify_connection():
+        logger.warning(f"⚠️  NEO4J NOT CONNECTED | Project ID: {project_id} | Cannot get version history")
+        return []
+    
+    try:
+        with get_session() as session:
+            result = session.run("""
+                MATCH (pkg:Package)
+                WHERE pkg.projectId = $project_id
+                RETURN pkg.id as id, pkg.version as version, pkg.timestamp as timestamp, pkg.generatedAt as generatedAt
+                ORDER BY pkg.timestamp DESC
+            """, {"project_id": project_id})
+            
+            versions = []
+            for record in result:
+                versions.append({
+                    "id": record["id"],
+                    "version": record["version"],
+                    "timestamp": record["timestamp"],
+                    "generatedAt": record["generatedAt"]
+                })
+            
+            logger.info(f"✅ VERSION HISTORY RETRIEVED | Project ID: {project_id} | Versions: {len(versions)}")
+            return versions
+    except Exception as e:
+        logger.error(f"❌ ERROR GETTING VERSION HISTORY | Project ID: {project_id} | Error: {e}")
+        return []
+
+
 def check_pkg_stored(project_id: str) -> bool:
     """
     Check if PKG for a project is already stored in Neo4j.
@@ -545,12 +712,24 @@ def check_pkg_stored(project_id: str) -> bool:
     
     try:
         with get_session() as session:
-            result = session.run(
-                "MATCH (p:Project {id: $project_id}) RETURN p",
-                {"project_id": project_id}
-            )
+            # Check by projectId property (for versioned packages) or by Package/Project node
+            result = session.run("""
+                MATCH (p:Package {projectId: $project_id})
+                RETURN p
+                LIMIT 1
+            """, {"project_id": project_id})
             record = result.single()
             exists = record is not None
+            
+            # Fallback: check Project node if no Package found (backward compatibility)
+            if not exists:
+                result = session.run(
+                    "MATCH (p:Project {id: $project_id}) RETURN p",
+                    {"project_id": project_id}
+                )
+                record = result.single()
+                exists = record is not None
+            
             if exists:
                 logger.info(f"✅ PKG FOUND IN NEO4J | Project ID: {project_id}")
             else:
@@ -561,18 +740,19 @@ def check_pkg_stored(project_id: str) -> bool:
         return False
 
 
-def load_pkg_from_neo4j(project_id: str) -> Optional[Dict[str, Any]]:
+def load_pkg_from_neo4j(project_id: str, version: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Load PKG data from Neo4j and reconstruct the full PKG JSON structure.
     
     Args:
         project_id: Project ID to load
+        version: Optional version string to load specific version. If None, loads latest.
         
     Returns:
         Complete PKG dictionary matching the schema from pkg_generator.py,
         or None if project not found or on error
     """
-    logger.info(f"📥 LOADING PKG FROM NEO4J | Project ID: {project_id}")
+    logger.info(f"📥 LOADING PKG FROM NEO4J | Project ID: {project_id} | Version: {version or 'latest'}")
     if not verify_connection():
         logger.warning(f"⚠️  NEO4J NOT CONNECTED | Project ID: {project_id} | Cannot load PKG")
         return None
@@ -586,10 +766,22 @@ def load_pkg_from_neo4j(project_id: str) -> Optional[Dict[str, Any]]:
         with get_session() as session:
             # 1. Load Package node (version, generatedAt, gitSha)
             package_data = {}
-            result = session.run(
-                "MATCH (pkg:Package {id: $project_id}) RETURN pkg",
-                {"project_id": project_id}
-            )
+            if version:
+                # Load specific version
+                pkg_id = f"{project_id}_v{version}" if not version.startswith(project_id) else version
+                result = session.run(
+                    "MATCH (pkg:Package {id: $pkg_id}) RETURN pkg",
+                    {"pkg_id": pkg_id}
+                )
+            else:
+                # Load latest version (highest timestamp)
+                result = session.run("""
+                    MATCH (pkg:Package {projectId: $project_id})
+                    RETURN pkg
+                    ORDER BY pkg.timestamp DESC
+                    LIMIT 1
+                """, {"project_id": project_id})
+            
             record = result.single()
             if record:
                 pkg_node = record["pkg"]
@@ -598,6 +790,20 @@ def load_pkg_from_neo4j(project_id: str) -> Optional[Dict[str, Any]]:
                     "generatedAt": pkg_node.get("generatedAt"),
                     "gitSha": pkg_node.get("gitSha")
                 }
+            else:
+                # Fallback: try old format (backward compatibility)
+                result = session.run(
+                    "MATCH (pkg:Package {id: $project_id}) RETURN pkg",
+                    {"project_id": project_id}
+                )
+                record = result.single()
+                if record:
+                    pkg_node = record["pkg"]
+                    package_data = {
+                        "version": pkg_node.get("version", "1.0.0"),
+                        "generatedAt": pkg_node.get("generatedAt"),
+                        "gitSha": pkg_node.get("gitSha")
+                    }
             
             # 2. Load Project node and Metadata
             project_data = {}
@@ -774,6 +980,76 @@ def load_pkg_from_neo4j(project_id: str) -> Optional[Dict[str, Any]]:
             exc_info=True
         )
         return None
+
+
+def migrate_existing_pkgs() -> int:
+    """
+    Migrate existing PKG data to compute metrics for modules that don't have them.
+    
+    Returns:
+        Number of modules updated
+    """
+    logger.info("🔄 MIGRATING EXISTING PKGS | Computing metrics for existing modules")
+    if not verify_connection():
+        logger.warning("⚠️  NEO4J NOT CONNECTED | Cannot migrate existing PKGs")
+        return 0
+    
+    try:
+        with get_session() as session:
+            # Find modules without metrics
+            result = session.run("""
+                MATCH (mod:Module)
+                WHERE mod.fan_in IS NULL OR mod.fan_out IS NULL OR mod.centrality IS NULL OR mod.complexity IS NULL
+                RETURN mod.id AS module_id
+                LIMIT 1000
+            """)
+            
+            module_ids = [record["module_id"] for record in result]
+            
+            if not module_ids:
+                logger.info("✅ NO MIGRATION NEEDED | All modules already have metrics")
+                return 0
+            
+            logger.info(f"📊 MIGRATING MODULES | Found {len(module_ids)} modules without metrics")
+            
+            # Calculate and update metrics in batches
+            updated_count = 0
+            for i in range(0, len(module_ids), batch_size):
+                batch_ids = module_ids[i:i + batch_size]
+                
+                # Calculate metrics for batch
+                session.run("""
+                    UNWIND $module_ids AS module_id
+                    MATCH (mod:Module {id: module_id})
+                    
+                    // Calculate fan_in (modules that import this module)
+                    OPTIONAL MATCH (caller:Module)-[r:IMPORTS]->(mod)
+                    WITH mod, module_id, count(DISTINCT caller) AS fan_in
+                    
+                    // Calculate fan_out (modules this module imports)
+                    OPTIONAL MATCH (mod)-[r:IMPORTS]->(callee:Module)
+                    WITH mod, module_id, fan_in, count(DISTINCT callee) AS fan_out
+                    
+                    // Calculate complexity from exports and imports arrays
+                    WITH mod, module_id, fan_in, fan_out,
+                         CASE WHEN mod.exports IS NOT NULL THEN size(mod.exports) ELSE 0 END AS exports_count,
+                         CASE WHEN mod.imports IS NOT NULL THEN size(mod.imports) ELSE 0 END AS imports_count
+                    
+                    SET mod.fan_in = fan_in,
+                        mod.fan_out = fan_out,
+                        mod.centrality = fan_in + fan_out,
+                        mod.complexity = exports_count + imports_count
+                """, {"module_ids": batch_ids})
+                
+                updated_count += len(batch_ids)
+                logger.debug(f"✅ MIGRATED BATCH | Updated {len(batch_ids)} modules")
+            
+            logger.info(f"✅ MIGRATION COMPLETE | Updated {updated_count} modules with metrics")
+            return updated_count
+            
+    except Exception as e:
+        logger.error(f"❌ MIGRATION ERROR | Error: {e}", exc_info=True)
+        return 0
 
 
 # Initialize driver on module import

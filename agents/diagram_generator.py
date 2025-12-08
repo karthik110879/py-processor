@@ -5,8 +5,10 @@ import os
 import base64
 import json
 import re
+import hashlib
 from typing import Dict, Any, List, Optional, Set, Tuple
 from collections import defaultdict
+from datetime import datetime, timedelta
 
 from services.pkg_query_engine import PKGQueryEngine
 from langchain_openai import ChatOpenAI
@@ -44,157 +46,399 @@ class DiagramGenerator:
         self.llm = None
         self._init_llm()
     
-    def generate_diagram(self, intent: Dict[str, Any], user_message: str) -> Dict[str, Any]:
+    def _format_error_message(self, error: Exception, context: str) -> Dict[str, Any]:
+        """
+        Format error into structured error message with actionable guidance.
+        
+        Args:
+            error: Exception that occurred
+            context: Context string describing where error occurred
+            
+        Returns:
+            Structured error dictionary
+        """
+        error_type = type(error).__name__
+        error_str = str(error)
+        
+        # Map common exceptions to actionable messages
+        if isinstance(error, ImportError):
+            if 'playwright' in error_str.lower():
+                message = "Playwright not installed. Run: pip install playwright && playwright install chromium"
+                error_category = "rendering_failed"
+            else:
+                message = f"Import error: {error_str}"
+                error_category = "generation_error"
+        elif isinstance(error, FileNotFoundError):
+            if 'mmdc' in error_str.lower() or 'mermaid' in error_str.lower():
+                message = "mermaid-cli not found. Install with: npm install -g @mermaid-js/mermaid-cli"
+                error_category = "rendering_failed"
+            else:
+                message = f"File not found: {error_str}"
+                error_category = "generation_error"
+        elif isinstance(error, TimeoutError):
+            message = "Rendering timed out. Try reducing diagram complexity or node_limit"
+            error_category = "rendering_failed"
+        elif isinstance(error, ConnectionError):
+            message = "Network error. Check internet connection for Mermaid.ink API"
+            error_category = "rendering_failed"
+        else:
+            message = f"{error_type}: {error_str}"
+            error_category = "generation_error"
+        
+        return {
+            "type": error_category,
+            "message": message,
+            "fallback_available": True,
+            "context": context
+        }
+    
+    def _get_cache_key(self, diagram_type: str, module_ids: Optional[List[str]], depth: int) -> str:
+        """
+        Generate MD5 hash cache key from diagram parameters.
+        
+        Args:
+            diagram_type: Type of diagram (dependency, architecture, etc.)
+            module_ids: List of module IDs (None for all modules)
+            depth: Maximum depth for dependency traversal
+            
+        Returns:
+            MD5 hash string as cache key
+        """
+        git_sha = self.pkg_data.get('gitSha', '')
+        module_ids_str = ''
+        if module_ids:
+            sorted_ids = sorted(module_ids)
+            module_ids_str = '_'.join(sorted_ids)
+        
+        key_string = f"{diagram_type}_{self.project_id}_{module_ids_str}_{depth}_{git_sha}"
+        cache_key = hashlib.md5(key_string.encode('utf-8')).hexdigest()
+        return cache_key
+    
+    def _get_cached_diagram(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve cached diagram from Neo4j if available and not expired.
+        
+        Args:
+            cache_key: Cache key string
+            
+        Returns:
+            Cached diagram result dict or None if not found/expired
+        """
+        if not self.neo4j_engine or not self.project_id:
+            return None
+        
+        try:
+            from db.neo4j_db import get_session, verify_connection
+            
+            if not verify_connection():
+                return None
+            
+            with get_session() as session:
+                result = session.run("""
+                    MATCH (proj:Project {id: $project_id})-[:HAS_DIAGRAM]->(doc:Document {type: 'diagram', cacheKey: $key})
+                    RETURN doc.data AS data, doc.timestamp AS timestamp
+                    LIMIT 1
+                """, {
+                    "project_id": self.project_id,
+                    "key": cache_key
+                })
+                
+                record = result.single()
+                if record:
+                    timestamp = record["timestamp"]
+                    data = record["data"]
+                    
+                    # Check TTL (1 hour = 3600 seconds)
+                    if timestamp:
+                        # Convert Neo4j datetime to Python datetime if needed
+                        if hasattr(timestamp, 'to_native'):
+                            timestamp = timestamp.to_native()
+                        
+                        # Calculate age
+                        if isinstance(timestamp, datetime):
+                            age = (datetime.utcnow() - timestamp).total_seconds()
+                        else:
+                            # Fallback: assume expired if we can't parse
+                            logger.warning(f"Could not parse timestamp for cache key {cache_key}")
+                            return None
+                        
+                        if age > 3600:  # 1 hour TTL
+                            logger.debug(f"Cache expired for key {cache_key} (age: {age}s)")
+                            return None
+                    
+                    logger.info(f"Cache hit for diagram key {cache_key}")
+                    return data
+                
+                return None
+        except Exception as e:
+            logger.warning(f"Error retrieving cached diagram: {e}", exc_info=True)
+            return None
+    
+    def _store_cached_diagram(self, cache_key: str, result: Dict[str, Any]) -> None:
+        """
+        Store diagram result in Neo4j cache.
+        
+        Args:
+            cache_key: Cache key string
+            result: Diagram result dictionary to cache
+        """
+        if not self.neo4j_engine or not self.project_id:
+            return
+        
+        try:
+            from db.neo4j_db import get_session, verify_connection
+            
+            if not verify_connection():
+                return
+            
+            with get_session() as session:
+                session.run("""
+                    MATCH (proj:Project {id: $project_id})
+                    MERGE (doc:Document {cacheKey: $key, type: 'diagram'})
+                    SET doc.data = $result,
+                        doc.timestamp = datetime(),
+                        doc.projectId = $project_id
+                    MERGE (proj)-[:HAS_DIAGRAM]->(doc)
+                """, {
+                    "project_id": self.project_id,
+                    "key": cache_key,
+                    "result": result
+                })
+                
+                logger.debug(f"Cached diagram with key {cache_key}")
+        except Exception as e:
+            logger.warning(f"Error storing cached diagram: {e}", exc_info=True)
+    
+    def generate_diagram(self, intent: Dict[str, Any], user_message: str, use_cache: bool = True, customizations: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Generate a diagram based on the request.
         
         Args:
             intent: Extracted intent dictionary
             user_message: User's message
+            use_cache: Whether to use cached diagrams (default: True)
+            customizations: Optional customization dict with:
+                - theme: "default" | "dark" | "forest" | "neutral" (Mermaid theme)
+                - layout: "hierarchical" | "force" | "circular" (graph direction)
+                - node_limit: int (limit number of nodes, default: 50)
+                - show_labels: bool (show/hide edge labels, default: True)
+                - group_by: "kind" | "feature" | "layer" (subgraph grouping)
             
         Returns:
             Dictionary with diagram content, format, and metadata
         """
-        message_lower = user_message.lower()
-        
-        # Early query parsing for natural language module discovery
-        query_obj = None
-        target_modules = []
         try:
-            query_obj = self._parse_query_for_module(user_message)
-            target_modules = self._find_modules_from_query(query_obj)
-        except Exception as e:
-            logger.debug(f"Query parsing failed, using fallback: {e}")
-        
-        # Determine diagram type and scope
-        # Architecture diagrams are triggered by explicit architecture/project requests
-        # or when intent_category is diagram_request AND user mentions architecture/project
-        is_diagram_request = intent.get('intent_category') == 'diagram_request'
-        has_architecture_keywords = 'architecture' in message_lower or 'project' in message_lower or 'structure' in message_lower
-        
-        if has_architecture_keywords or (is_diagram_request and ('architecture' in message_lower or 'project' in message_lower)):
-            diagram_type = "architecture"
-            module_ids = None  # All modules
-        elif target_modules:
-            # Found modules from natural language query - use focused dependency diagram
-            diagram_type = "focused_dependency"
-            module_ids = None  # Will use target_modules instead
-        elif 'module' in message_lower:
-            # Try to extract specific module (fallback to old method)
-            module_id = self._extract_module_from_query(user_message)
-            if module_id:
-                diagram_type = "module"
-                module_ids = [module_id]
+            message_lower = user_message.lower()
+            
+            # Early query parsing for natural language module discovery
+            query_obj = None
+            target_modules = []
+            try:
+                query_obj = self._parse_query_for_module(user_message)
+                target_modules = self._find_modules_from_query(query_obj)
+            except Exception as e:
+                logger.debug(f"Query parsing failed, using fallback: {e}")
+            
+            # Determine diagram type and scope
+            # Architecture diagrams are triggered by explicit architecture/project requests
+            # or when intent_category is diagram_request AND user mentions architecture/project
+            is_diagram_request = intent.get('intent_category') == 'diagram_request'
+            has_architecture_keywords = 'architecture' in message_lower or 'project' in message_lower or 'structure' in message_lower
+            
+            if has_architecture_keywords or (is_diagram_request and ('architecture' in message_lower or 'project' in message_lower)):
+                diagram_type = "architecture"
+                module_ids = None  # All modules
+            elif target_modules:
+                # Found modules from natural language query - use focused dependency diagram
+                diagram_type = "focused_dependency"
+                module_ids = None  # Will use target_modules instead
+            elif 'module' in message_lower:
+                # Try to extract specific module (fallback to old method)
+                module_id = self._extract_module_from_query(user_message)
+                if module_id:
+                    diagram_type = "module"
+                    module_ids = [module_id]
+                else:
+                    diagram_type = "dependency"
+                    module_ids = None
             else:
                 diagram_type = "dependency"
                 module_ids = None
-        else:
-            diagram_type = "dependency"
-            module_ids = None
-        
-        # Determine format preference
-        if 'mermaid' in message_lower:
-            format_type = "mermaid"
-        elif 'dot' in message_lower or 'graphviz' in message_lower:
-            format_type = "dot"
-        else:
-            format_type = "mermaid"  # Default to mermaid for architecture diagrams
-        
-        # Determine depth
-        depth = 2
-        if 'depth' in message_lower or 'level' in message_lower:
-            depth_match = re.search(r'(?:depth|level)\s*[:\s]*(\d+)', message_lower)
-            if depth_match:
-                depth = int(depth_match.group(1))
-        
-        # Handle architecture diagram generation
-        if diagram_type == "architecture":
-            try:
-                # Check if LLM is available
-                if not self.llm:
-                    logger.warning("LLM not available for architecture diagram, falling back to standard diagram")
+            
+            # Determine format preference
+            if 'mermaid' in message_lower:
+                format_type = "mermaid"
+            elif 'dot' in message_lower or 'graphviz' in message_lower:
+                format_type = "dot"
+            else:
+                format_type = "mermaid"  # Default to mermaid for architecture diagrams
+            
+            # Determine depth
+            depth = 2
+            if 'depth' in message_lower or 'level' in message_lower:
+                depth_match = re.search(r'(?:depth|level)\s*[:\s]*(\d+)', message_lower)
+                if depth_match:
+                    depth = int(depth_match.group(1))
+            
+            # Check cache if enabled
+            if use_cache:
+                cache_key = self._get_cache_key(diagram_type, module_ids, depth)
+                cached_result = self._get_cached_diagram(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached diagram for key {cache_key}")
+                    return cached_result
+            
+            # Handle architecture diagram generation
+            if diagram_type == "architecture":
+                try:
+                    # Check if LLM is available
+                    if not self.llm:
+                        logger.warning("LLM not available for architecture diagram, falling back to standard diagram")
+                        diagram_type = "dependency"
+                    else:
+                        mermaid_code = self._generate_architecture_diagram(user_message)
+                        # Render to high-resolution image (use resolution=2 for 3840px+ width)
+                        content, rendered_info = self._render_mermaid_to_image(mermaid_code, resolution=2)
+                        metadata = {
+                            "generated_by": "llm"
+                        }
+                        if rendered_info:
+                            metadata.update(rendered_info)
+                        return {
+                            "diagram_type": diagram_type,
+                            "format": "mermaid",
+                            "content": content,
+                            "mermaid_code": mermaid_code,  # Also include raw code for fallback
+                            "modules_included": [],
+                            "metadata": metadata
+                        }
+                except Exception as e:
+                    logger.warning(f"Architecture diagram generation failed: {e}, falling back to standard diagram", exc_info=True)
+                    # Fallback to standard dependency diagram
                     diagram_type = "dependency"
-                else:
-                    mermaid_code = self._generate_architecture_diagram(user_message)
-                    # Render to high-resolution image (use resolution=2 for 3840px+ width)
-                    content, rendered_info = self._render_mermaid_to_image(mermaid_code, resolution=2)
-                    metadata = {
-                        "generated_by": "llm"
-                    }
-                    if rendered_info:
-                        metadata.update(rendered_info)
-                    return {
-                        "diagram_type": diagram_type,
-                        "format": "mermaid",
-                        "content": content,
-                        "mermaid_code": mermaid_code,  # Also include raw code for fallback
-                        "modules_included": [],
-                        "metadata": metadata
-                    }
-            except Exception as e:
-                logger.warning(f"Architecture diagram generation failed: {e}, falling back to standard diagram", exc_info=True)
-                # Fallback to standard dependency diagram
-                diagram_type = "dependency"
-        
-        # Build dependency graph for non-architecture diagrams
-        if diagram_type == "focused_dependency" and target_modules:
-            # Use focused dependency graph
-            direction = query_obj.get("direction", "both") if query_obj else "both"
-            graph_data = self._build_focused_dependency_graph(target_modules, depth, direction)
-        else:
-            # Use standard dependency graph
-            graph_data = self._build_dependency_graph(module_ids, depth)
-        
-        # Generate diagram in requested format
-        mermaid_code = None  # Initialize for all formats
-        rendered_info = None  # Track rendering status
-        if format_type == "text":
-            content = self._generate_text_diagram(graph_data)
-        elif format_type == "dot":
-            content = self._generate_dot_format(graph_data)
-        elif format_type == "mermaid":
-            # Capture raw Mermaid code first
-            mermaid_code = self._generate_mermaid_format(graph_data)
-            # Render to high-resolution image
-            content, rendered_info = self._render_mermaid_to_image(mermaid_code)
-        else:
-            content = self._generate_text_diagram(graph_data)
-        
-        # Build metadata
-        metadata = {
-            "depth": depth,
-            "edge_count": len(graph_data.get('edges', [])),
-            "module_count": len(graph_data.get('module_ids', []))
-        }
-        
-        # Add rendering metadata if available
-        if rendered_info:
-            metadata.update(rendered_info)
-        
-        # Add focused diagram metadata if applicable
-        if diagram_type == "focused_dependency":
-            metadata["target_modules"] = graph_data.get('target_modules', [])
-            metadata["direction"] = graph_data.get('direction', 'both')
-            metadata["is_focused"] = True
-            if target_modules:
-                metadata["target_module_paths"] = [m.get('path', '') for m in target_modules[:5]]
-        
-        return {
-            "diagram_type": diagram_type,
-            "format": format_type,
-            "content": content,
-            "mermaid_code": mermaid_code,  # Raw code without markdown wrapper for frontend fallback
-            "modules_included": graph_data.get('module_ids', []),
-            "metadata": metadata
-        }
+            
+            # Extract customizations with defaults
+            node_limit = customizations.get('node_limit') if customizations else None
+            show_labels = customizations.get('show_labels', True) if customizations else True
+            theme = customizations.get('theme', 'default') if customizations else 'default'
+            layout = customizations.get('layout', 'hierarchical') if customizations else 'hierarchical'
+            group_by = customizations.get('group_by', 'kind') if customizations else 'kind'
+            
+            # Build dependency graph for non-architecture diagrams
+            if diagram_type == "focused_dependency" and target_modules:
+                # Use focused dependency graph
+                direction = query_obj.get("direction", "both") if query_obj else "both"
+                graph_data = self._build_focused_dependency_graph(target_modules, depth, direction, node_limit)
+            else:
+                # Use standard dependency graph
+                graph_data = self._build_dependency_graph(module_ids, depth, node_limit)
+            
+            # Generate diagram in requested format
+            mermaid_code = None  # Initialize for all formats
+            rendered_info = None  # Track rendering status
+            if format_type == "text":
+                content = self._generate_text_diagram(graph_data)
+            elif format_type == "dot":
+                content = self._generate_dot_format(graph_data)
+            elif format_type == "mermaid":
+                # Capture raw Mermaid code first
+                mermaid_code = self._generate_mermaid_format(graph_data, customizations={
+                    'theme': theme,
+                    'layout': layout,
+                    'show_labels': show_labels,
+                    'group_by': group_by
+                })
+                # Render to high-resolution image
+                content, rendered_info = self._render_mermaid_to_image(mermaid_code, theme=theme)
+            else:
+                content = self._generate_text_diagram(graph_data)
+            
+            # Build metadata
+            metadata = {
+                "depth": depth,
+                "edge_count": len(graph_data.get('edges', [])),
+                "module_count": len(graph_data.get('module_ids', []))
+            }
+            
+            # Add rendering metadata if available
+            if rendered_info:
+                metadata.update(rendered_info)
+            
+            # Add focused diagram metadata if applicable
+            if diagram_type == "focused_dependency":
+                metadata["target_modules"] = graph_data.get('target_modules', [])
+                metadata["direction"] = graph_data.get('direction', 'both')
+                metadata["is_focused"] = True
+                if target_modules:
+                    metadata["target_module_paths"] = [m.get('path', '') for m in target_modules[:5]]
+            
+            # Build result
+            result = {
+                "diagram_type": diagram_type,
+                "format": format_type,
+                "content": content,
+                "mermaid_code": mermaid_code,  # Raw code without markdown wrapper for frontend fallback
+                "modules_included": graph_data.get('module_ids', []),
+                "metadata": metadata
+            }
+            
+            # Add interactive flag for mermaid format
+            if format_type == "mermaid":
+                result["interactive"] = True
+                if "metadata" not in result:
+                    result["metadata"] = {}
+                result["metadata"]["render_mode"] = "interactive"
+                result["metadata"]["supports_zoom"] = True
+                result["metadata"]["supports_filter"] = True
+            
+            # Cache successful result
+            if use_cache:
+                cache_key = self._get_cache_key(diagram_type, module_ids, depth)
+                self._store_cached_diagram(cache_key, result)
+            
+            return result
+        except Exception as e:
+            # Error handling with fallback
+            error_info = self._format_error_message(e, "diagram_generation")
+            logger.error(f"Error generating diagram: {e}", exc_info=True)
+            
+            # Always provide fallback
+            fallback_code = None
+            # Safely get diagram_type and format_type, defaulting if not defined
+            try:
+                diagram_type_val = diagram_type
+            except NameError:
+                diagram_type_val = "dependency"
+            
+            try:
+                format_type_val = format_type
+            except NameError:
+                format_type_val = "mermaid"
+            
+            if diagram_type_val == "architecture" and hasattr(self, '_generate_architecture_diagram'):
+                try:
+                    fallback_code = self._generate_architecture_diagram(user_message)
+                except:
+                    pass
+            
+            return {
+                "diagram_type": diagram_type_val,
+                "format": format_type_val,
+                "error": error_info,
+                "content": f"```mermaid\n{fallback_code or 'graph TD\n    Error[Error generating diagram]'}\n```" if fallback_code else "Error generating diagram. Please try again.",
+                "mermaid_code": fallback_code,
+                "modules_included": [],
+                "metadata": {}
+            }
     
-    def _build_dependency_graph(self, module_ids: Optional[List[str]], depth: int) -> Dict[str, Any]:
+    def _build_dependency_graph(self, module_ids: Optional[List[str]], depth: int, node_limit: Optional[int] = None) -> Dict[str, Any]:
         """
         Build dependency graph from PKG data.
         
         Args:
             module_ids: List of starting module IDs (None for all modules)
             depth: Maximum depth to traverse
+            node_limit: Optional limit on number of nodes to include
             
         Returns:
             Dictionary with module_ids, edges, and module_info
@@ -207,6 +451,24 @@ class DiagramGenerator:
             # Expand to include dependencies up to depth
             impacted = self.query_engine.get_impacted_modules(module_ids, depth)
             module_ids = impacted.get('impacted_module_ids', module_ids)
+        
+        # Apply node_limit if specified
+        if node_limit and len(module_ids) > node_limit:
+            # Prioritize modules by centrality/fan-in if available
+            module_scores = []
+            for mod_id in module_ids:
+                try:
+                    deps = self.query_engine.get_dependencies(mod_id)
+                    fan_in = deps.get('fan_in_count', 0)
+                    fan_out = deps.get('fan_out_count', 0)
+                    centrality = fan_in + fan_out
+                    module_scores.append((mod_id, centrality))
+                except:
+                    module_scores.append((mod_id, 0))
+            
+            # Sort by centrality (descending) and take top N
+            module_scores.sort(key=lambda x: x[1], reverse=True)
+            module_ids = [mod_id for mod_id, _ in module_scores[:node_limit]]
         
         # Build edge list for included modules
         edges = []
@@ -252,7 +514,8 @@ class DiagramGenerator:
         self, 
         target_modules: List[Dict[str, Any]], 
         depth: int, 
-        direction: str = "both"
+        direction: str = "both",
+        node_limit: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Build focused dependency graph starting from target modules.
@@ -261,6 +524,7 @@ class DiagramGenerator:
             target_modules: List of target module dictionaries
             depth: Maximum depth to traverse
             direction: "both" (default), "incoming" (callers), "outgoing" (callees)
+            node_limit: Optional limit on number of nodes to include
             
         Returns:
             Dictionary with module_ids, edges, module_info, target_modules, direction
@@ -385,8 +649,36 @@ class DiagramGenerator:
                     'is_target': mod_id in target_module_ids
                 }
         
+        module_ids_list = list(all_deps)
+        
+        # Apply node_limit if specified
+        if node_limit and len(module_ids_list) > node_limit:
+            # Prioritize target modules first, then by centrality
+            module_scores = []
+            for mod_id in module_ids_list:
+                is_target = mod_id in target_module_ids
+                try:
+                    deps = self.query_engine.get_dependencies(mod_id)
+                    fan_in = deps.get('fan_in_count', 0)
+                    fan_out = deps.get('fan_out_count', 0)
+                    centrality = fan_in + fan_out
+                    # Boost score for target modules
+                    score = centrality + (1000 if is_target else 0)
+                    module_scores.append((mod_id, score))
+                except:
+                    score = 1000 if mod_id in target_module_ids else 0
+                    module_scores.append((mod_id, score))
+            
+            # Sort by score (descending) and take top N
+            module_scores.sort(key=lambda x: x[1], reverse=True)
+            module_ids_list = [mod_id for mod_id, _ in module_scores[:node_limit]]
+            
+            # Filter edges to only include selected modules
+            module_id_set = set(module_ids_list)
+            edges = [e for e in edges if e.get('from') in module_id_set and e.get('to') in module_id_set]
+        
         return {
-            'module_ids': list(all_deps),
+            'module_ids': module_ids_list,
             'edges': edges,
             'module_info': module_info,
             'target_modules': target_module_ids,
@@ -507,18 +799,38 @@ class DiagramGenerator:
         
         return dot
     
-    def _generate_mermaid_format(self, graph_data: Dict[str, Any]) -> str:
-        """Generate Mermaid format diagram with support for focused diagrams."""
+    def _generate_mermaid_format(self, graph_data: Dict[str, Any], customizations: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Generate Mermaid format diagram with support for focused diagrams and customizations.
+        
+        Args:
+            graph_data: Graph data dictionary
+            customizations: Optional customization dict with theme, layout, show_labels, group_by
+        """
         module_ids = graph_data.get('module_ids', [])
         edges = graph_data.get('edges', [])
         module_info = graph_data.get('module_info', {})
+        
+        # Extract customizations with defaults
+        theme = customizations.get('theme', 'default') if customizations else 'default'
+        layout = customizations.get('layout', 'hierarchical') if customizations else 'hierarchical'
+        show_labels = customizations.get('show_labels', True) if customizations else True
+        group_by = customizations.get('group_by', 'kind') if customizations else 'kind'
         
         # Check if this is a focused diagram
         is_focused = 'target_modules' in graph_data
         target_modules = graph_data.get('target_modules', [])
         direction = graph_data.get('direction', 'both')
         
-        mermaid = "graph TD\n"
+        # Map layout to Mermaid graph direction
+        layout_map = {
+            'hierarchical': 'TD',
+            'force': 'LR',
+            'circular': 'TD'  # Circular uses TD with special styling
+        }
+        graph_direction = layout_map.get(layout, 'TD')
+        
+        mermaid = f"graph {graph_direction}\n"
         
         # Define styles for focused diagrams
         if is_focused:
@@ -530,36 +842,74 @@ class DiagramGenerator:
             mermaid += "  classDef defaultModule fill:#dfe6e9,stroke:#b2bec3,stroke-width:1px\n"
             mermaid += "\n"
         
-        # Group modules by kind for focused diagrams
-        modules_by_kind = defaultdict(list)
-        if is_focused:
-            for mod_id in module_ids:
-                info = module_info.get(mod_id, {})
-                kinds = info.get('kind', [])
-                if isinstance(kinds, list) and kinds:
-                    # Use first kind for grouping
-                    primary_kind = kinds[0].lower()
-                    modules_by_kind[primary_kind].append(mod_id)
-                else:
-                    modules_by_kind['other'].append(mod_id)
+        # Group modules based on group_by customization
+        modules_by_group = defaultdict(list)
+        if is_focused or group_by != 'none':
+            if group_by == 'feature':
+                # Group by feature membership
+                features = self.pkg_data.get('features', [])
+                feature_map = {}
+                for feature in features:
+                    for mod_id in feature.get('moduleIds', []):
+                        if mod_id not in feature_map:
+                            feature_map[mod_id] = []
+                        feature_map[mod_id].append(feature.get('name', 'Unknown'))
+                
+                for mod_id in module_ids:
+                    feature_names = feature_map.get(mod_id, [])
+                    if feature_names:
+                        # Use first feature
+                        modules_by_group[feature_names[0]].append(mod_id)
+                    else:
+                        modules_by_group['other'].append(mod_id)
+            elif group_by == 'layer':
+                # Group by architectural layer (infer from path/kind)
+                for mod_id in module_ids:
+                    info = module_info.get(mod_id, {})
+                    path = info.get('path', '').lower()
+                    kinds = info.get('kind', [])
+                    
+                    # Infer layer from path or kind
+                    if 'controller' in path or 'ctrl' in path or any('controller' in str(k).lower() for k in kinds):
+                        modules_by_group['Controllers'].append(mod_id)
+                    elif 'service' in path or any('service' in str(k).lower() for k in kinds):
+                        modules_by_group['Services'].append(mod_id)
+                    elif 'entity' in path or 'model' in path or any('entity' in str(k).lower() or 'model' in str(k).lower() for k in kinds):
+                        modules_by_group['Entities'].append(mod_id)
+                    elif 'repository' in path or 'repo' in path or any('repository' in str(k).lower() for k in kinds):
+                        modules_by_group['Repositories'].append(mod_id)
+                    else:
+                        modules_by_group['Other'].append(mod_id)
+            else:  # group_by == 'kind' or default
+                # Group by kind (existing logic)
+                for mod_id in module_ids:
+                    info = module_info.get(mod_id, {})
+                    kinds = info.get('kind', [])
+                    if isinstance(kinds, list) and kinds:
+                        # Use first kind for grouping
+                        primary_kind = kinds[0].lower()
+                        modules_by_group[primary_kind].append(mod_id)
+                    else:
+                        modules_by_group['other'].append(mod_id)
         
         # Create node mapping
         node_map = {}
         node_classes = {}  # Track which class to apply to each node
         
-        # If focused and has kind groups, use subgraphs
-        if is_focused and modules_by_kind:
-            kind_order = ['controller', 'service', 'entity', 'repository', 'component', 'module', 'other']
-            for kind in kind_order:
-                if kind in modules_by_kind and modules_by_kind[kind]:
-                    # Create subgraph for this kind
-                    kind_label = kind.capitalize() + 's'
-                    mermaid += f"  subgraph {kind_label}\n"
+        # If focused and has groups, use subgraphs
+        if (is_focused or group_by != 'none') and modules_by_group:
+            # Sort groups for consistent ordering
+            group_order = sorted(modules_by_group.keys())
+            for group_name in group_order:
+                if modules_by_group[group_name]:
+                    # Create subgraph for this group
+                    mermaid += f"  subgraph {group_name}\n"
                     
-                    for mod_id in modules_by_kind[kind]:
+                    for mod_id in modules_by_group[group_name]:
                         info = module_info.get(mod_id, {})
                         path = info.get('path', mod_id)
                         display_name = self._format_module_name(path)
+                        kinds = info.get('kind', [])
                         
                         node_id = f"M{len(node_map)}"
                         node_map[mod_id] = node_id
@@ -568,13 +918,13 @@ class DiagramGenerator:
                         # Determine node class
                         if mod_id in target_modules:
                             node_classes[node_id] = 'targetModule'
-                        elif kind == 'service':
+                        elif isinstance(kinds, list) and any('service' in str(k).lower() for k in kinds):
                             node_classes[node_id] = 'serviceModule'
-                        elif kind == 'controller':
+                        elif isinstance(kinds, list) and any('controller' in str(k).lower() for k in kinds):
                             node_classes[node_id] = 'controllerModule'
-                        elif kind == 'entity':
+                        elif isinstance(kinds, list) and any('entity' in str(k).lower() for k in kinds):
                             node_classes[node_id] = 'entityModule'
-                        elif kind == 'repository':
+                        elif isinstance(kinds, list) and any('repository' in str(k).lower() for k in kinds):
                             node_classes[node_id] = 'repositoryModule'
                         else:
                             node_classes[node_id] = 'defaultModule'
@@ -622,7 +972,7 @@ class DiagramGenerator:
             if from_mod and to_mod and from_mod in node_map and to_mod in node_map:
                 edge_type_counts[edge_type] += 1
                 
-                if is_focused and edge_type in ['imports', 'calls', 'extends']:
+                if show_labels and (is_focused or edge_type in ['imports', 'calls', 'extends']):
                     # Add edge label for relationship type
                     edge_label = edge_type.capitalize()
                     mermaid += f'  {node_map[from_mod]} -->|"{edge_label}"| {node_map[to_mod]}\n'
@@ -1170,7 +1520,7 @@ Return ONLY the Mermaid code, no explanations or markdown formatting."""
             logger.error(f"Error generating architecture diagram with LLM: {e}", exc_info=True)
             raise
     
-    def _render_mermaid_to_image(self, mermaid_code: str, resolution: int = 2) -> Tuple[str, Dict[str, Any]]:
+    def _render_mermaid_to_image(self, mermaid_code: str, resolution: int = 2, theme: str = 'default') -> Tuple[str, Dict[str, Any]]:
         """
         Render Mermaid code to high-resolution image and return as Markdown.
         
@@ -1190,30 +1540,33 @@ Return ONLY the Mermaid code, no explanations or markdown formatting."""
         """
         # Try Playwright first (high-resolution rendering)
         try:
-            return self._render_with_playwright(mermaid_code, resolution)
+            return self._render_with_playwright(mermaid_code, resolution, theme)
         except Exception as e:
+            error_info = self._format_error_message(e, "playwright_rendering")
             logger.warning(f"Playwright rendering failed: {e}, trying fallback methods")
         
         # Fallback 1: Try mermaid-cli
         try:
             return self._render_with_mermaid_cli(mermaid_code, resolution)
         except Exception as e:
+            error_info = self._format_error_message(e, "mermaid_cli_rendering")
             logger.warning(f"mermaid-cli rendering failed: {e}, trying Mermaid.ink")
         
         # Fallback 2: Try Mermaid.ink API (low-res)
         try:
             return self._render_with_mermaid_ink(mermaid_code)
         except Exception as e:
+            error_info = self._format_error_message(e, "mermaid_ink_rendering")
             logger.warning(f"Mermaid.ink API failed: {e}, falling back to code block")
         
         # Fallback 3: Return code block
         logger.warning("All rendering methods failed, returning Mermaid code block")
         return (
             f"```mermaid\n{mermaid_code}\n```",
-            {"rendered": False, "resolution": 0, "method": "code_block"}
+            {"rendered": False, "resolution": 0, "method": "code_block", "error": error_info if 'error_info' in locals() else None}
         )
     
-    def _render_with_playwright(self, mermaid_code: str, resolution: int = 2) -> Tuple[str, Dict[str, Any]]:
+    def _render_with_playwright(self, mermaid_code: str, resolution: int = 2, theme: str = 'default') -> Tuple[str, Dict[str, Any]]:
         """
         Render Mermaid diagram using Playwright in headless browser.
         
@@ -1266,7 +1619,7 @@ Return ONLY the Mermaid code, no explanations or markdown formatting."""
     <script>
         mermaid.initialize({{
             startOnLoad: true,
-            theme: 'default',
+            theme: '{theme}',
             themeVariables: {{
                 fontSize: '16px'
             }}

@@ -2,6 +2,8 @@
 
 import logging
 import os
+import socket
+import sys
 from datetime import datetime
 from flask import Flask
 from dotenv import load_dotenv
@@ -174,6 +176,45 @@ def create_app() -> Flask:
     return app
 
 
+def is_port_available(host: str, port: int) -> bool:
+    """
+    Check if a port is available for binding.
+    
+    Args:
+        host: Host address to check
+        port: Port number to check
+        
+    Returns:
+        True if port is available, False otherwise
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            result = sock.bind((host, port))
+            return True
+    except OSError:
+        return False
+
+
+def find_available_port(host: str, start_port: int, max_attempts: int = 10) -> int:
+    """
+    Find an available port starting from start_port.
+    
+    Args:
+        host: Host address to check
+        start_port: Starting port number
+        max_attempts: Maximum number of ports to try
+        
+    Returns:
+        Available port number, or None if none found
+    """
+    for i in range(max_attempts):
+        port = start_port + i
+        if is_port_available(host, port):
+            return port
+    return None
+
+
 def main() -> None:
     """Run the Flask application."""
     app = create_app()
@@ -182,15 +223,58 @@ def main() -> None:
     host = os.getenv('HOST', '0.0.0.0')
     port = int(os.getenv('PORT', 5001))
     debug = os.getenv('DEBUG', 'False').lower() == 'true'
+    allow_port_fallback = os.getenv('ALLOW_PORT_FALLBACK', 'True').lower() == 'true'
+    
+    # Check if port is available
+    if not is_port_available(host, port):
+        logger.warning(f"Port {port} is already in use!")
+        
+        if allow_port_fallback:
+            logger.info(f"Attempting to find an available port starting from {port}...")
+            available_port = find_available_port(host, port)
+            if available_port:
+                logger.info(f"Found available port: {available_port}. Using it instead of {port}.")
+                port = available_port
+            else:
+                logger.error(f"Could not find an available port after checking {port} to {port + 10}.")
+                logger.error("Please:")
+                logger.error("1. Stop any other instances of this application")
+                logger.error("2. Or set a different PORT in your environment variables")
+                logger.error("3. Or kill the process using the port with: netstat -ano | findstr :5001")
+                sys.exit(1)
+        else:
+            logger.error(f"Port {port} is already in use and port fallback is disabled.")
+            logger.error("Please:")
+            logger.error("1. Stop any other instances of this application")
+            logger.error("2. Or set a different PORT in your environment variables")
+            logger.error("3. Or kill the process using the port")
+            logger.error("   Windows: netstat -ano | findstr :{port}")
+            logger.error("   Then: taskkill /PID <PID> /F")
+            sys.exit(1)
     
     logger.info(f"Starting Flask server on {host}:{port} (debug={debug})")
     
     # Use SocketIO.run if available, otherwise fall back to app.run
     global socketio
-    if socketio is not None:
-        socketio.run(app, host=host, port=port, debug=debug)
-    else:
-        app.run(host=host, port=port, debug=debug)
+    try:
+        if socketio is not None:
+            socketio.run(app, host=host, port=port, debug=debug)
+        else:
+            app.run(host=host, port=port, debug=debug)
+    except OSError as e:
+        if "10048" in str(e) or "Only one usage" in str(e):
+            logger.error(f"Port {port} is already in use!")
+            logger.error("This can happen if:")
+            logger.error("1. Another instance of this application is running")
+            logger.error("2. A previous instance didn't shut down properly")
+            logger.error("3. Another application is using this port")
+            logger.error("\nTo resolve:")
+            logger.error(f"Windows: netstat -ano | findstr :{port}")
+            logger.error("Then find the PID and kill it: taskkill /PID <PID> /F")
+            logger.error(f"Or set a different port: set PORT=<different_port>")
+            sys.exit(1)
+        else:
+            raise
 
 
 if __name__ == '__main__':

@@ -241,31 +241,112 @@ Provide a clear, detailed answer about the features in this project. List and de
         return response
     
     def _generate_project_summary(self) -> str:
-        """Generate a project summary."""
+        """Generate a comprehensive project summary using LLM with full project context."""
         project = self.pkg_data.get('project', {})
         modules = self.pkg_data.get('modules', [])
-        summaries = self.pkg_data.get('summaries', {})
-        
-        if summaries.get('projectSummary'):
-            base_summary = summaries['projectSummary']
-        else:
-            base_summary = f"Project {project.get('name', 'Unknown')} with {len(modules)} modules"
-        
-        languages = project.get('languages', [])
         endpoints = self.pkg_data.get('endpoints', [])
         features = self.pkg_data.get('features', [])
+        edges = self.pkg_data.get('edges', [])
         
-        details = []
+        # Try LLM-powered generation if available
+        if self.llm:
+            try:
+                logger.info("Generating project summary using LLM")
+                context = self._build_full_project_context()
+                
+                prompt = f"""You are a helpful assistant generating comprehensive project summaries. Based on the following project information, create a detailed 4-6 sentence summary covering:
+
+1. Project purpose and primary function
+2. Technology stack and programming languages used
+3. Module structure and organization
+4. Feature areas and their roles
+5. Entry points and startup flow
+6. API endpoints (if present)
+7. Key architectural components
+
+Project Information:
+{context}
+
+Generate a comprehensive, descriptive summary that provides a clear overview of this project. Write in a natural, flowing style that connects these aspects together."""
+                
+                response = self.llm.invoke(prompt)
+                summary = response.content if hasattr(response, 'content') else str(response)
+                logger.info("Successfully generated project summary using LLM")
+                return summary
+            except Exception as e:
+                logger.error(f"Error generating project summary with LLM: {e}", exc_info=True)
+                logger.info("Falling back to structured response")
+        
+        # Enhanced fallback response when LLM is unavailable
+        project_name = project.get('name', 'Unknown')
+        languages = project.get('languages', [])
+        module_count = len(modules)
+        feature_count = len(features)
+        endpoint_count = len(endpoints)
+        dependency_count = len([e for e in edges if e.get('type') == 'imports'])
+        
+        # Get entry point modules
+        entry_modules = self.query_engine.get_entry_point_modules()
+        
+        # Build structured fallback response
+        response_parts = []
+        
+        # Project overview
+        response_parts.append(f"Project: {project_name}")
+        
+        # Technology stack
         if languages:
-            details.append(f"written in {', '.join(languages)}")
-        if endpoints:
-            details.append(f"with {len(endpoints)} API endpoints")
-        if features:
-            details.append(f"organized into {len(features)} feature areas")
+            response_parts.append(f"Technology Stack: {', '.join(languages)}")
         
-        if details:
-            return f"{base_summary}. {', '.join(details)}."
-        return base_summary
+        response_parts.append("")  # Empty line for spacing
+        
+        # Main description
+        main_desc = f"This project contains {module_count} modules"
+        if feature_count > 0:
+            feature_names = [f.get('name', 'Unknown') for f in features]
+            main_desc += f" organized into {feature_count} feature area(s): {', '.join(feature_names)}"
+        main_desc += "."
+        response_parts.append(main_desc)
+        response_parts.append("")  # Empty line for spacing
+        
+        # Entry points section
+        if entry_modules:
+            response_parts.append("Entry Points:")
+            for module in entry_modules:
+                path = module.get('path', '')
+                summary = module.get('moduleSummary', '')
+                response_parts.append(f"  - {path}")
+                if summary:
+                    response_parts.append(f"    {summary}")
+            response_parts.append("")  # Empty line for spacing
+        
+        # Dependency statistics
+        if dependency_count > 0:
+            response_parts.append(f"The project has {dependency_count} dependency relationships between modules.")
+            response_parts.append("")  # Empty line for spacing
+        
+        # API endpoints section
+        if endpoint_count > 0:
+            response_parts.append(f"API Endpoints: {endpoint_count} endpoint(s) available")
+            # List a few key endpoints
+            by_method = {}
+            for endpoint in endpoints[:10]:  # Limit to first 10
+                method = endpoint.get('method', 'UNKNOWN')
+                if method not in by_method:
+                    by_method[method] = []
+                by_method[method].append(endpoint)
+            
+            for method, eps in sorted(by_method.items()):
+                response_parts.append(f"  {method}:")
+                for endpoint in eps[:5]:  # Limit to 5 per method
+                    path = endpoint.get('path', 'unknown')
+                    summary = endpoint.get('summary', '')
+                    endpoint_line = f"    - {path}"
+                    if summary:
+                        endpoint_line += f" ({summary})"
+                    response_parts.append(endpoint_line)
+        
+        return "\n".join(response_parts)
     
     def _list_dependencies(self, module_id: Optional[str] = None) -> str:
         """List dependencies for a module or the entire project."""

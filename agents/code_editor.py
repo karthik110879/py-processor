@@ -3,7 +3,7 @@
 import logging
 import os
 import subprocess
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from git import Repo, InvalidGitRepositoryError
 from git.exc import GitCommandError
 
@@ -61,12 +61,13 @@ class CodeEditExecutor:
             logger.error(f"Error creating branch: {e}", exc_info=True)
             raise
     
-    def apply_edits(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+    def apply_edits(self, plan: Dict[str, Any], pkg_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Apply code edits from plan.
         
         Args:
             plan: Plan dictionary with tasks
+            pkg_data: Optional PKG data dictionary for context-aware editing
             
         Returns:
             Dictionary with edit results
@@ -94,9 +95,8 @@ class CodeEditExecutor:
                         })
                         continue
                     
-                    # Apply edits (simple approach for now)
-                    # In Phase 2, this can be enhanced with AST-aware editing
-                    edit_result = self._edit_file(full_path, change_descriptions, task)
+                    # Apply edits with PKG context
+                    edit_result = self._edit_file(full_path, change_descriptions, task, pkg_data)
                     
                     if edit_result['success']:
                         changes.append({
@@ -131,7 +131,8 @@ class CodeEditExecutor:
         self,
         file_path: str,
         change_descriptions: List[str],
-        task: Dict[str, Any]
+        task: Dict[str, Any],
+        pkg_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Edit a file based on change descriptions.
@@ -140,6 +141,7 @@ class CodeEditExecutor:
             file_path: Full path to file
             change_descriptions: List of change descriptions
             task: Task dictionary
+            pkg_data: Optional PKG data dictionary for context-aware editing
             
         Returns:
             Dictionary with success status and diff
@@ -149,13 +151,13 @@ class CodeEditExecutor:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 original_content = f.read()
             
-            # For now, use simple LLM-based editing
-            # In Phase 2, this can be enhanced with AST-aware tools
+            # Use LLM-based editing with PKG context
             modified_content = self._apply_llm_edit(
                 file_path,
                 original_content,
                 change_descriptions,
-                task
+                task,
+                pkg_data
             )
             
             if modified_content == original_content:
@@ -165,6 +167,26 @@ class CodeEditExecutor:
                     "error": "No changes applied",
                     "diff": ""
                 }
+            
+            # Validate code before writing
+            try:
+                from agents.code_validator import CodeValidator
+                validator = CodeValidator(self.repo_path)
+                validation_result = validator.validate_all(file_path, modified_content, pkg_data)
+                
+                if not validation_result['valid']:
+                    return {
+                        "success": False,
+                        "error": f"Validation failed: {'; '.join(validation_result['errors'])}",
+                        "diff": ""
+                    }
+                
+                # Log warnings if any
+                if validation_result.get('warnings'):
+                    logger.warning(f"Code validation warnings for {file_path}: {validation_result['warnings']}")
+            except Exception as e:
+                logger.warning(f"Code validation error: {e}", exc_info=True)
+                # Continue even if validation fails (non-blocking)
             
             # Write modified content
             with open(file_path, 'w', encoding='utf-8') as f:
@@ -192,16 +214,18 @@ class CodeEditExecutor:
         file_path: str,
         original_content: str,
         change_descriptions: List[str],
-        task: Dict[str, Any]
+        task: Dict[str, Any],
+        pkg_data: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        Apply edits using LLM (simple approach).
+        Apply edits using LLM with rich PKG context.
         
         Args:
             file_path: File path
             original_content: Original file content
             change_descriptions: List of change descriptions
             task: Task dictionary
+            pkg_data: Optional PKG data dictionary for context-aware editing
             
         Returns:
             Modified file content
@@ -221,6 +245,69 @@ class CodeEditExecutor:
                 openai_api_key=api_key
             )
             
+            # Build rich context from PKG if available
+            context_info = ""
+            if pkg_data:
+                try:
+                    from agents.code_context_analyzer import CodeContextAnalyzer
+                    from services.pkg_query_engine import PKGQueryEngine
+                    
+                    query_engine = PKGQueryEngine(pkg_data)
+                    context_analyzer = CodeContextAnalyzer(pkg_data, query_engine)
+                    
+                    # Find module in PKG by file path
+                    # Convert file_path to relative path from repo root
+                    rel_path = os.path.relpath(file_path, self.repo_path) if os.path.isabs(file_path) else file_path
+                    
+                    # Try to find module by path
+                    module = None
+                    for mod in pkg_data.get('modules', []):
+                        if mod.get('path') == rel_path or mod.get('path') == file_path:
+                            module = mod
+                            break
+                    
+                    if module:
+                        module_id = module.get('id')
+                        intent = task.get('intent', {})
+                        context = context_analyzer.build_code_generation_context(module_id, intent)
+                        
+                        # Build context string for prompt
+                        context_parts = []
+                        
+                        if context.get('framework'):
+                            context_parts.append(f"- Framework: {context['framework']}")
+                        
+                        if context.get('patterns', {}).get('patterns'):
+                            patterns_str = ', '.join(context['patterns']['patterns'][:5])
+                            context_parts.append(f"- Code patterns: {patterns_str}")
+                        
+                        if context.get('related_modules'):
+                            related_paths = [m.get('path', '') for m in context['related_modules'][:3]]
+                            if related_paths:
+                                context_parts.append(f"- Related modules: {', '.join(related_paths)}")
+                        
+                        if context.get('import_patterns', {}).get('direct_imports'):
+                            imports_str = ', '.join(context['import_patterns']['direct_imports'][:5])
+                            context_parts.append(f"- Import patterns: {imports_str}")
+                        
+                        if context.get('code_style', {}).get('naming_convention'):
+                            context_parts.append(f"- Naming convention: {context['code_style']['naming_convention']}")
+                        
+                        if context.get('type_information'):
+                            type_info_str = ', '.join([
+                                f"{name}: {info.get('signature', '')}" 
+                                for name, info in list(context['type_information'].items())[:3]
+                            ])
+                            if type_info_str:
+                                context_parts.append(f"- Type information: {type_info_str}")
+                        
+                        if context_parts:
+                            context_info = "\n".join(context_parts) + "\n"
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to build PKG context: {e}", exc_info=True)
+                    # Continue without context if there's an error
+            
             changes_text = '\n'.join(f"- {desc}" for desc in change_descriptions)
             
             prompt = f"""You are a code-edit assistant. Given:
@@ -231,9 +318,10 @@ class CodeEditExecutor:
 >>>
 - Edit instructions:
 {changes_text}
-
+{context_info}
 Apply the edits precisely. Return ONLY the modified file content (no prose, no explanations).
-Preserve code style and formatting. Make minimal, targeted changes."""
+Preserve code style and formatting. Make minimal, targeted changes.
+{f"Follow the framework patterns and conventions shown in related modules." if context_info else ""}"""
 
             response = llm.invoke(prompt)
             modified_content = response.content if hasattr(response, 'content') else str(response)

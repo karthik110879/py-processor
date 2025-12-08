@@ -3,7 +3,7 @@
 import logging
 import os
 import uuid
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,8 @@ class Planner:
         self,
         intent: Dict[str, Any],
         impact_result: Dict[str, Any],
-        constraints: List[str]
+        constraints: List[str],
+        pkg_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Generate a step-by-step code change plan.
@@ -52,6 +53,7 @@ class Planner:
             intent: Intent dictionary
             impact_result: Impact analysis result
             constraints: List of constraints
+            pkg_data: Optional PKG data dictionary for context-aware planning
             
         Returns:
             Plan dictionary with tasks
@@ -60,7 +62,7 @@ class Planner:
             return self._fallback_plan(intent, impact_result, constraints)
         
         try:
-            return self._call_llm(intent, impact_result, constraints)
+            return self._call_llm(intent, impact_result, constraints, pkg_data)
         except Exception as e:
             logger.error(f"LLM planning failed: {e}", exc_info=True)
             return self._fallback_plan(intent, impact_result, constraints)

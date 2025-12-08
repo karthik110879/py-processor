@@ -596,7 +596,7 @@ class AgentOrchestrator:
                 planner = Planner()
                 
                 constraints = intent.get('constraints', [])
-                plan = planner.generate_plan(intent, impact_result, constraints)
+                plan = planner.generate_plan(intent, impact_result, constraints, pkg_data)
                 
                 plan_id = str(uuid.uuid4())
                 plan['plan_id'] = plan_id
@@ -645,7 +645,7 @@ class AgentOrchestrator:
             
             # Continue with execution if no approval needed
             self._execute_plan(
-                plan, repo_path, session_id, socketio, sid
+                plan, repo_path, session_id, socketio, sid, pkg_data
             )
         
         except Exception as e:
@@ -662,7 +662,8 @@ class AgentOrchestrator:
         repo_path: str,
         session_id: str,
         socketio: SocketIO,
-        sid: str
+        sid: str,
+        pkg_data: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Execute the approved plan.
@@ -673,7 +674,13 @@ class AgentOrchestrator:
             session_id: Session identifier
             socketio: SocketIO instance
             sid: Socket session ID
+            pkg_data: Optional PKG data dictionary for context-aware editing
         """
+        # Retrieve pkg_data from session if not provided
+        if pkg_data is None:
+            session = self.sessions.get(session_id, {})
+            pkg_data = session.get('pkg_data')
+        
         try:
             # Phase 4: Code Editing
             self._stream_update(
@@ -697,7 +704,7 @@ class AgentOrchestrator:
                 )
                 
                 # Apply edits
-                edit_result = editor.apply_edits(plan)
+                edit_result = editor.apply_edits(plan, pkg_data=pkg_data)
                 
                 # Stream code changes
                 for change in edit_result.get('changes', []):
@@ -913,6 +920,61 @@ class AgentOrchestrator:
                 session_id
             )
     
+    def _parse_customizations_from_message(self, user_message: str, intent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Parse customization options from user message.
+        
+        Args:
+            user_message: User's message
+            intent: Extracted intent dictionary
+            
+        Returns:
+            Customizations dict or None
+        """
+        customizations = {}
+        message_lower = user_message.lower()
+        
+        # Parse theme
+        if 'dark theme' in message_lower or 'dark' in message_lower:
+            customizations['theme'] = 'dark'
+        elif 'forest theme' in message_lower or 'forest' in message_lower:
+            customizations['theme'] = 'forest'
+        elif 'neutral theme' in message_lower or 'neutral' in message_lower:
+            customizations['theme'] = 'neutral'
+        
+        # Parse layout
+        if 'force layout' in message_lower or 'left-right' in message_lower or 'lr' in message_lower:
+            customizations['layout'] = 'force'
+        elif 'circular layout' in message_lower or 'circular' in message_lower:
+            customizations['layout'] = 'circular'
+        elif 'hierarchical' in message_lower or 'top-down' in message_lower:
+            customizations['layout'] = 'hierarchical'
+        
+        # Parse node_limit
+        import re
+        node_match = re.search(r'(\d+)\s*nodes?', message_lower)
+        if node_match:
+            customizations['node_limit'] = int(node_match.group(1))
+        elif 'limit' in message_lower:
+            # Default to 50 if limit mentioned but no number
+            customizations['node_limit'] = 50
+        
+        # Parse show_labels
+        if 'hide labels' in message_lower or 'no labels' in message_lower:
+            customizations['show_labels'] = False
+        elif 'show labels' in message_lower:
+            customizations['show_labels'] = True
+        
+        # Parse group_by
+        if 'group by feature' in message_lower or 'feature group' in message_lower:
+            customizations['group_by'] = 'feature'
+        elif 'group by layer' in message_lower or 'layer group' in message_lower:
+            customizations['group_by'] = 'layer'
+        elif 'group by kind' in message_lower or 'kind group' in message_lower:
+            customizations['group_by'] = 'kind'
+        
+        return customizations if customizations else None
+    
     def _handle_diagram_request(
         self,
         user_message: str,
@@ -946,17 +1008,35 @@ class AgentOrchestrator:
             query_engine = PKGQueryEngine(pkg_data)
             diagram_generator = DiagramGenerator(pkg_data, query_engine)
             
-            result = diagram_generator.generate_diagram(intent, user_message)
+            # Extract customizations from user message or intent
+            customizations = self._parse_customizations_from_message(user_message, intent)
+            
+            result = diagram_generator.generate_diagram(intent, user_message, use_cache=True, customizations=customizations)
+            
+            # Build response with all fields including interactive flag and mermaid_code
+            response_data = {
+                "diagram_type": result.get('diagram_type', 'dependency'),
+                "format": result.get('format', 'text'),
+                "content": result.get('content', ''),
+                "modules_included": result.get('modules_included', []),
+                "metadata": result.get('metadata', {})
+            }
+            
+            # Add interactive flag if present
+            if 'interactive' in result:
+                response_data['interactive'] = result['interactive']
+            
+            # Add mermaid_code if present
+            if 'mermaid_code' in result:
+                response_data['mermaid_code'] = result['mermaid_code']
+            
+            # Add error if present
+            if 'error' in result:
+                response_data['error'] = result['error']
             
             self._stream_update(
                 socketio, sid, "diagram_response", "diagram_generation",
-                {
-                    "diagram_type": result.get('diagram_type', 'dependency'),
-                    "format": result.get('format', 'text'),
-                    "content": result.get('content', ''),
-                    "modules_included": result.get('modules_included', []),
-                    "metadata": result.get('metadata', {})
-                },
+                response_data,
                 session_id
             )
             
@@ -1021,8 +1101,11 @@ class AgentOrchestrator:
                 session_id
             )
             
+            # Get pkg_data from session
+            pkg_data = session.get('pkg_data')
+            
             # Execute plan
-            self._execute_plan(plan, repo_path, session_id, socketio, sid)
+            self._execute_plan(plan, repo_path, session_id, socketio, sid, pkg_data)
         
         except Exception as e:
             logger.error(f"Error approving plan: {e}", exc_info=True)

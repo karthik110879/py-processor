@@ -450,3 +450,189 @@ class Neo4jQueryEngine:
         comparison["architecture2"] = {r["kind"]: r["count"] for r in arch2}
         
         return comparison
+    
+    # ==================== Fulltext Search ====================
+    
+    def search_modules_by_summary(self, project_id: str, query_text: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search modules by summary using fulltext index.
+        
+        Args:
+            project_id: Project ID to search within
+            query_text: Search query text
+            limit: Maximum number of results
+            
+        Returns:
+            List of modules with search scores
+        """
+        query = """
+        CALL db.index.fulltext.queryNodes('module_summary_ft', $query_text)
+        YIELD node, score
+        MATCH (proj:Project {id: $project_id})-[:HAS_MODULE]->(node)
+        RETURN node, score
+        ORDER BY score DESC
+        LIMIT $limit
+        """
+        
+        try:
+            results = self._execute_query(query, {
+                "project_id": project_id,
+                "query_text": query_text,
+                "limit": limit
+            })
+            return [{"module": record["node"], "score": record["score"]} for record in results]
+        except Exception as e:
+            logger.warning(f"Fulltext search not available or failed: {e}")
+            # Fallback to regex search
+            return self._fallback_module_search(project_id, query_text, limit)
+    
+    def _fallback_module_search(self, project_id: str, query_text: str, limit: int) -> List[Dict[str, Any]]:
+        """Fallback regex-based search when fulltext index is unavailable."""
+        query = """
+        MATCH (proj:Project {id: $project_id})-[:HAS_MODULE]->(mod:Module)
+        WHERE mod.moduleSummary =~ $pattern
+        RETURN mod
+        LIMIT $limit
+        """
+        pattern = f"(?i).*{query_text}.*"
+        results = self._execute_query(query, {
+            "project_id": project_id,
+            "pattern": pattern,
+            "limit": limit
+        })
+        return [{"module": record["mod"], "score": 1.0} for record in results]
+    
+    def search_symbols_by_summary(self, project_id: str, query_text: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search symbols by summary using fulltext index.
+        
+        Args:
+            project_id: Project ID to search within
+            query_text: Search query text
+            limit: Maximum number of results
+            
+        Returns:
+            List of symbols with search scores
+        """
+        query = """
+        CALL db.index.fulltext.queryNodes('symbol_summary_ft', $query_text)
+        YIELD node, score
+        MATCH (proj:Project {id: $project_id})-[:HAS_SYMBOL]->(node)
+        RETURN node, score
+        ORDER BY score DESC
+        LIMIT $limit
+        """
+        
+        try:
+            results = self._execute_query(query, {
+                "project_id": project_id,
+                "query_text": query_text,
+                "limit": limit
+            })
+            return [{"symbol": record["node"], "score": record["score"]} for record in results]
+        except Exception as e:
+            logger.warning(f"Fulltext search not available or failed: {e}")
+            # Fallback to regex search
+            return self._fallback_symbol_search(project_id, query_text, limit)
+    
+    def _fallback_symbol_search(self, project_id: str, query_text: str, limit: int) -> List[Dict[str, Any]]:
+        """Fallback regex-based search when fulltext index is unavailable."""
+        query = """
+        MATCH (proj:Project {id: $project_id})-[:HAS_SYMBOL]->(sym:Symbol)
+        WHERE sym.summary =~ $pattern
+        RETURN sym
+        LIMIT $limit
+        """
+        pattern = f"(?i).*{query_text}.*"
+        results = self._execute_query(query, {
+            "project_id": project_id,
+            "pattern": pattern,
+            "limit": limit
+        })
+        return [{"symbol": record["sym"], "score": 1.0} for record in results]
+    
+    # ==================== Vector Similarity Search ====================
+    
+    def find_similar_symbols(self, symbol_id: str, limit: int = 5, threshold: float = 0.7) -> List[Dict[str, Any]]:
+        """
+        Find similar symbols using embedding vector similarity.
+        
+        Args:
+            symbol_id: Symbol ID to find similar symbols for
+            limit: Maximum number of results
+            threshold: Minimum similarity score (0.0 to 1.0)
+            
+        Returns:
+            List of similar symbols with similarity scores
+        """
+        # First, get embedding for source symbol
+        query = """
+        MATCH (s:Symbol {id: $symbol_id})
+        RETURN s.embedding AS embedding
+        LIMIT 1
+        """
+        results = self._execute_query(query, {"symbol_id": symbol_id})
+        
+        if not results or not results[0].get("embedding"):
+            logger.warning(f"Symbol {symbol_id} has no embedding")
+            return []
+        
+        embedding = results[0]["embedding"]
+        
+        # Try vector index search (Neo4j 5.x+)
+        try:
+            query = """
+            CALL db.index.vector.queryNodes('symbol_embedding_index', $limit, $embedding)
+            YIELD node, score
+            WHERE node.id <> $symbol_id AND score >= $threshold
+            RETURN node, score
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+            results = self._execute_query(query, {
+                "symbol_id": symbol_id,
+                "embedding": embedding,
+                "limit": limit,
+                "threshold": threshold
+            })
+            return [{"symbol": record["node"], "score": float(record["score"])} for record in results]
+        except Exception as e:
+            logger.warning(f"Vector index search not available, using fallback: {e}")
+            # Fallback to cosine similarity calculation in Cypher
+            return self._fallback_vector_search(symbol_id, embedding, limit, threshold)
+    
+    def _fallback_vector_search(self, symbol_id: str, embedding: List[float], limit: int, threshold: float) -> List[Dict[str, Any]]:
+        """Fallback cosine similarity calculation when vector index is unavailable."""
+        # Calculate cosine similarity manually
+        query = """
+        MATCH (s:Symbol)
+        WHERE s.id <> $symbol_id AND s.embedding IS NOT NULL
+        WITH s, s.embedding AS emb
+        
+        // Calculate dot product and magnitudes for cosine similarity
+        WITH s, emb,
+             reduce(dot = 0.0, i IN range(0, size(emb) - 1) | 
+                dot + emb[i] * $embedding[i]
+             ) AS dot_product,
+             sqrt(reduce(mag1 = 0.0, x IN emb | mag1 + x * x)) AS mag1,
+             sqrt(reduce(mag2 = 0.0, x IN $embedding | mag2 + x * x)) AS mag2
+        
+        WHERE mag1 > 0 AND mag2 > 0
+        WITH s, (dot_product / (mag1 * mag2)) AS similarity
+        WHERE similarity >= $threshold
+        RETURN s, similarity
+        ORDER BY similarity DESC
+        LIMIT $limit
+        """
+        
+        try:
+            results = self._execute_query(query, {
+                "symbol_id": symbol_id,
+                "embedding": embedding,
+                "limit": limit,
+                "threshold": threshold
+            })
+            return [{"symbol": record["s"], "score": float(record["similarity"])} for record in results]
+        except Exception as e:
+            logger.error(f"Fallback vector search failed: {e}", exc_info=True)
+            return []
