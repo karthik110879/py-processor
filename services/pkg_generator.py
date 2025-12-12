@@ -4,7 +4,8 @@ import os
 import hashlib
 import json
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
+import logging
 from pathlib import Path
 
 from code_parser.project_metadata import extract_project_metadata
@@ -13,30 +14,140 @@ from code_parser.multi_parser import detect_language, parse_file
 from code_parser.multi_normalizer import extract_definitions
 from code_parser.endpoint_extractors import extract_endpoints
 from code_parser.relationship_extractor import extract_relationships, calculate_fan_in_fan_out
+from code_parser.exceptions import ParseError, ImportResolutionError
 from utils.file_utils import collect_files
+from utils.config import Config
+from utils.logging_config import get_logger, log_with_context
 import db.neo4j_db as neo4j_database  # Import to ensure connection is established
+import functools
+import time
+import traceback
+
+logger = get_logger(__name__)
+
+
+def retry(max_attempts: int = 3, delay: float = 1.0, backoff: float = 2.0, exceptions: tuple = (Exception,)):
+    """
+    Retry decorator for transient failures.
+    
+    Args:
+        max_attempts: Maximum number of attempts
+        delay: Initial delay between attempts in seconds
+        backoff: Backoff multiplier for delay
+        exceptions: Tuple of exceptions to catch and retry
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            current_delay = delay
+            last_exception = None
+            
+            for attempt in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt < max_attempts - 1:
+                        logger.warning(f"Attempt {attempt + 1}/{max_attempts} failed for {func.__name__}: {e}. Retrying in {current_delay}s...")
+                        time.sleep(current_delay)
+                        current_delay *= backoff
+                    else:
+                        logger.error(f"All {max_attempts} attempts failed for {func.__name__}: {e}")
+            
+            raise last_exception
+        return wrapper
+    return decorator
+
 
 class PKGGenerator:
     """Generate Project Knowledge Graph JSON."""
     
-    def __init__(self, repo_path: str, fan_threshold: int = 3, include_features: bool = True):
+    def __init__(self, repo_path: str, fan_threshold: Optional[int] = None, include_features: Optional[bool] = None):
         """
         Initialize PKG generator.
         
         Args:
             repo_path: Root path of the repository
-            fan_threshold: Fan-in threshold for filtering detailed symbol info
-            include_features: Whether to include feature groupings
+            fan_threshold: Fan-in threshold for filtering detailed symbol info (defaults to config)
+            include_features: Whether to include feature groupings (defaults to config)
         """
         self.repo_path = os.path.abspath(repo_path)
-        self.fan_threshold = fan_threshold
-        self.include_features = include_features
+        config = Config()
+        self.fan_threshold = fan_threshold if fan_threshold is not None else config.fan_threshold
+        self.include_features = include_features if include_features is not None else config.include_features
         self.modules = []
         self.symbols = []
         self.endpoints = []
         self.edges = []
         self.features = []
         self.frameworks = []
+        self.errors: List[Dict[str, Any]] = []
+        self.warnings: List[Dict[str, Any]] = []
+    
+    def _collect_error(self, error_type: str, file_path: str, message: str, stack_trace: Optional[str] = None) -> None:
+        """
+        Collect error information.
+        
+        Args:
+            error_type: Type of error (file_not_found, parse_error, etc.)
+            file_path: Path where error occurred
+            message: Error message
+            stack_trace: Optional stack trace
+        """
+        error = {
+            "type": error_type,
+            "file_path": file_path,
+            "message": message,
+            "stack_trace": stack_trace
+        }
+        self.errors.append(error)
+        log_with_context(
+            logger, logging.ERROR, f"Error collected: {message}",
+            repo_path=self.repo_path, file_path=file_path, error_type=error_type
+        )
+    
+    def _collect_warning(self, warning_type: str, file_path: str, message: str) -> None:
+        """
+        Collect warning information.
+        
+        Args:
+            warning_type: Type of warning
+            file_path: Path where warning occurred
+            message: Warning message
+        """
+        warning = {
+            "type": warning_type,
+            "file_path": file_path,
+            "message": message
+        }
+        self.warnings.append(warning)
+        log_with_context(
+            logger, logging.WARNING, f"Warning: {message}",
+            repo_path=self.repo_path, file_path=file_path
+        )
+    
+    @retry(max_attempts=3, delay=1.0, backoff=2.0, exceptions=(IOError, OSError))
+    def _read_file_with_retry(self, file_path: str) -> str:
+        """
+        Read file with retry logic for transient I/O failures.
+        
+        Args:
+            file_path: Path to file
+            
+        Returns:
+            File contents as string
+            
+        Raises:
+            FileNotFoundError: If file doesn't exist
+            IOError: If file can't be read after retries
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                return f.read()
+        except FileNotFoundError:
+            raise  # Don't retry file not found
+        except (IOError, OSError) as e:
+            raise IOError(f"Failed to read file {file_path}: {e}") from e
         
     def _generate_module_id(self, file_path: str) -> str:
         """Generate stable module ID from file path."""
@@ -61,7 +172,11 @@ class PKGGenerator:
             with open(file_path, 'rb') as f:
                 content = f.read()
                 return hashlib.sha256(content).hexdigest()
-        except Exception:
+        except FileNotFoundError as e:
+            self._collect_error("file_not_found", file_path, str(e))
+            return ""
+        except (IOError, OSError) as e:
+            self._collect_error("io_error", file_path, f"Failed to read file for hash: {e}")
             return ""
     
     def _count_lines_of_code(self, file_path: str) -> int:
@@ -69,35 +184,147 @@ class PKGGenerator:
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 return len([line for line in f if line.strip()])
-        except Exception:
+        except FileNotFoundError as e:
+            self._collect_error("file_not_found", file_path, str(e))
+            return 0
+        except (IOError, OSError) as e:
+            self._collect_error("io_error", file_path, f"Failed to read file for LOC: {e}")
             return 0
     
+    def _extract_decorators_from_ast(self, file_path: str) -> List[str]:
+        """
+        Extract decorators/annotations from file using AST analysis.
+        
+        Args:
+            file_path: Path to file
+            
+        Returns:
+            List of decorator names
+        """
+        decorators = []
+        try:
+            from code_parser.multi_parser import detect_language, parse_file
+            from code_parser.normalizer import get_text
+            
+            language = detect_language(file_path)
+            if not language:
+                return decorators
+            
+            root = parse_file(file_path)
+            if not root:
+                return decorators
+            
+            def walk(node):
+                yield node
+                for child in node.children:
+                    yield from walk(child)
+            
+            for node in walk(root):
+                # Python decorators
+                if node.type == "decorator":
+                    decorator_text = get_text(node, "").strip()
+                    if decorator_text.startswith("@"):
+                        decorators.append(decorator_text[1:].split("(")[0].strip())
+                
+                # TypeScript/JavaScript decorators
+                elif node.type == "decorator":
+                    decorator_text = get_text(node, "").strip()
+                    if decorator_text.startswith("@"):
+                        decorators.append(decorator_text[1:].split("(")[0].strip())
+                
+                # Java annotations
+                elif node.type == "annotation":
+                    annotation_text = get_text(node, "").strip()
+                    if annotation_text.startswith("@"):
+                        decorators.append(annotation_text[1:].split("(")[0].strip())
+                
+                # C# attributes
+                elif node.type == "attribute":
+                    attr_text = get_text(node, "").strip()
+                    if attr_text.startswith("[") and attr_text.endswith("]"):
+                        decorators.append(attr_text[1:-1].split("(")[0].strip())
+        
+        except Exception as e:
+            # Fallback to empty list on error
+            log_with_context(logger, logging.DEBUG, f"Failed to extract decorators from AST: {e}", file_path=file_path)
+            pass
+        
+        return decorators
+    
     def _detect_module_kind(self, file_path: str, definitions: Dict[str, Any], frameworks: List[str]) -> List[str]:
-        """Detect module kind/tags (controller, service, entity, etc.)."""
+        """
+        Detect module kind/tags using AST analysis and framework patterns.
+        
+        Args:
+            file_path: Path to file
+            definitions: Extracted definitions
+            frameworks: Detected frameworks
+            
+        Returns:
+            List of module kinds
+        """
         kinds = []
         file_name = os.path.basename(file_path).lower()
         path_lower = file_path.lower()
         
-        # Framework-specific detection
+        # Extract decorators from AST
+        decorators = self._extract_decorators_from_ast(file_path)
+        decorator_names = [d.lower() for d in decorators]
+        decorators_str = " ".join(decorator_names)
+        
+        # Framework-specific detection using AST decorators
         if "nestjs" in frameworks:
-            if "controller" in file_name or "@controller" in str(definitions).lower():
+            if "controller" in file_name or "@controller" in decorators_str or "controller" in decorators_str:
                 kinds.append("controller")
-            if "service" in file_name or "@injectable" in str(definitions).lower():
+            if "service" in file_name or "@injectable" in decorators_str or "injectable" in decorators_str:
                 kinds.append("service")
-            if "module" in file_name:
+            if "module" in file_name or "@module" in decorators_str or "module" in decorators_str:
                 kinds.append("module")
         
         if "spring-boot" in frameworks:
-            if "controller" in file_name or "@restcontroller" in str(definitions).lower():
+            if "controller" in file_name or "restcontroller" in decorators_str or "@restcontroller" in decorators_str:
                 kinds.append("controller")
-            if "service" in file_name or "@service" in str(definitions).lower():
+            if "service" in file_name or "@service" in decorators_str or "service" in decorators_str:
                 kinds.append("service")
-            if "repository" in file_name or "@repository" in str(definitions).lower():
+            if "repository" in file_name or "@repository" in decorators_str or "repository" in decorators_str:
                 kinds.append("repository")
         
         if any(f.startswith("aspnet") for f in frameworks):
-            if "controller" in file_name or "[controller]" in str(definitions).lower():
+            if "controller" in file_name or "controller" in decorators_str:
                 kinds.append("controller")
+        
+        # Django detection
+        if "django" in frameworks:
+            if "views" in path_lower or "view" in file_name:
+                kinds.append("controller")
+            if "models" in path_lower or "model" in file_name:
+                kinds.append("entity")
+            if "urls" in file_name:
+                kinds.append("route")
+        
+        # Flask detection
+        if "flask" in frameworks:
+            if "@app.route" in str(definitions) or "blueprint" in decorators_str:
+                kinds.append("controller")
+        
+        # Rails detection
+        if "rails" in frameworks:
+            if "controller" in file_name:
+                kinds.append("controller")
+            if "model" in file_name:
+                kinds.append("entity")
+            if "helper" in file_name:
+                kinds.append("util")
+        
+        # React detection
+        if "react" in frameworks:
+            if "component" in file_name or "jsx" in file_path.lower():
+                kinds.append("component")
+        
+        # Vue detection
+        if "vue" in frameworks:
+            if "component" in file_name or "vue" in file_path.lower():
+                kinds.append("component")
         
         # Generic patterns
         if "test" in file_name or "spec" in file_name:
@@ -121,45 +348,57 @@ class PKGGenerator:
         self.frameworks = detect_frameworks(self.repo_path)
         
         for file_path in files:
-            language = detect_language(file_path)
-            if not language:
+            try:
+                language = detect_language(file_path)
+                if not language:
+                    continue
+                
+                module_id = self._generate_module_id(file_path)
+                rel_path = os.path.relpath(file_path, self.repo_path).replace(os.sep, '/')
+                
+                # Parse file
+                try:
+                    definitions = extract_definitions(file_path)
+                    if not definitions:
+                        self._collect_warning("no_definitions", file_path, "No definitions extracted from file")
+                        continue
+                except ParseError as e:
+                    self._collect_error("parse_error", file_path, str(e), traceback.format_exc())
+                    continue
+                except Exception as e:
+                    self._collect_error("parse_error", file_path, f"Unexpected error during parsing: {e}", traceback.format_exc())
+                    continue
+                
+                # Calculate hash and LOC
+                file_hash = self._calculate_file_hash(file_path)
+                loc = self._count_lines_of_code(file_path)
+                
+                # Detect module kind
+                kinds = self._detect_module_kind(file_path, definitions, self.frameworks)
+                
+                # Extract imports (store raw for now, will be resolved later)
+                raw_imports = []
+                if "imports" in definitions:
+                    raw_imports = definitions["imports"]
+                
+                # Build module object
+                module = {
+                    "id": module_id,
+                    "path": rel_path,
+                    "kind": kinds,
+                    "loc": loc,
+                    "hash": file_hash,
+                    "exports": [],  # Will be populated with symbol IDs
+                    "imports": [],  # Will be resolved to module IDs in relationship extraction
+                    "definitions": definitions,  # Store for later processing
+                    "file_path": file_path,  # Store for endpoint extraction
+                    "raw_imports": raw_imports  # Store raw imports for resolution
+                }
+                
+                modules.append(module)
+            except Exception as e:
+                self._collect_error("module_build_error", file_path, f"Unexpected error building module: {e}", traceback.format_exc())
                 continue
-            
-            module_id = self._generate_module_id(file_path)
-            rel_path = os.path.relpath(file_path, self.repo_path).replace(os.sep, '/')
-            
-            # Parse file
-            definitions = extract_definitions(file_path)
-            if not definitions:
-                continue
-            
-            # Calculate hash and LOC
-            file_hash = self._calculate_file_hash(file_path)
-            loc = self._count_lines_of_code(file_path)
-            
-            # Detect module kind
-            kinds = self._detect_module_kind(file_path, definitions, self.frameworks)
-            
-            # Extract imports (store raw for now, will be resolved later)
-            raw_imports = []
-            if "imports" in definitions:
-                raw_imports = definitions["imports"]
-            
-            # Build module object
-            module = {
-                "id": module_id,
-                "path": rel_path,
-                "kind": kinds,
-                "loc": loc,
-                "hash": file_hash,
-                "exports": [],  # Will be populated with symbol IDs
-                "imports": [],  # Will be resolved to module IDs in relationship extraction
-                "definitions": definitions,  # Store for later processing
-                "file_path": file_path,  # Store for endpoint extraction
-                "raw_imports": raw_imports  # Store raw imports for resolution
-            }
-            
-            modules.append(module)
         
         return modules
     
@@ -189,18 +428,45 @@ class PKGGenerator:
                 params = func.get("parameters", "")
                 signature = f"{func_name}({params})"
                 
+                # Extract enhanced information
+                return_type = func.get("return_type", "")
+                is_async = func.get("is_async", False)
+                decorators = func.get("decorators", [])
+                visibility = func.get("visibility", "public")
+                parameters = func.get("parameters_list", [])  # Enhanced parameter list
+                
+                # Build full signature
+                if return_type:
+                    signature = f"{func_name}({params}) -> {return_type}"
+                else:
+                    signature = f"{func_name}({params})"
+                
                 symbol = {
                     "id": symbol_id,
                     "moduleId": module_id,
                     "name": func_name,
                     "kind": "function",
-                    "isExported": True,  # Simplified - can be enhanced
+                    "isExported": func.get("is_exported", True),
                     "signature": signature,
-                    "visibility": "public",
+                    "visibility": visibility,
                 }
                 
-                if include_details:
-                    symbol["summary"] = func.get("docstring", "")
+                # Add enhanced fields
+                if is_async:
+                    symbol["isAsync"] = True
+                if decorators:
+                    symbol["decorators"] = decorators
+                if parameters:
+                    symbol["parameters"] = parameters
+                if return_type:
+                    symbol["returnType"] = return_type
+                if func.get("generic_params"):
+                    symbol["genericParams"] = func.get("generic_params")
+                
+                # Always include summary if available (not just for high fan-in)
+                docstring = func.get("docstring", "")
+                if docstring:
+                    symbol["summary"] = docstring
                 
                 symbols.append(symbol)
                 # Add to module exports
@@ -243,15 +509,40 @@ class PKGGenerator:
                     if isinstance(method_name, str):
                         method_symbol_id = self._generate_symbol_id(module_id, f"{cls_name}.{method_name}")
                         
+                        # Extract enhanced method information
+                        method_params = method.get("parameters", "") if isinstance(method, dict) else ""
+                        method_return_type = method.get("return_type", "") if isinstance(method, dict) else ""
+                        method_is_async = method.get("is_async", False) if isinstance(method, dict) else False
+                        method_decorators = method.get("decorators", []) if isinstance(method, dict) else []
+                        method_visibility = method.get("visibility", "public") if isinstance(method, dict) else "public"
+                        
+                        # Build signature
+                        if method_return_type:
+                            method_signature = f"{method_name}({method_params}) -> {method_return_type}"
+                        else:
+                            method_signature = f"{method_name}({method_params})"
+                        
                         method_symbol = {
                             "id": method_symbol_id,
                             "moduleId": module_id,
                             "name": f"{cls_name}.{method_name}",
                             "kind": "method",
-                            "isExported": False,
-                            "signature": f"{method_name}()",
-                            "visibility": "public",
+                            "isExported": method.get("is_exported", False) if isinstance(method, dict) else False,
+                            "signature": method_signature,
+                            "visibility": method_visibility,
                         }
+                        
+                        # Add enhanced fields
+                        if method_is_async:
+                            method_symbol["isAsync"] = True
+                        if method_decorators:
+                            method_symbol["decorators"] = method_decorators
+                        if method.get("parameters_list") and isinstance(method, dict):
+                            method_symbol["parameters"] = method.get("parameters_list")
+                        if method_return_type:
+                            method_symbol["returnType"] = method_return_type
+                        if isinstance(method, dict) and method.get("docstring"):
+                            method_symbol["summary"] = method.get("docstring")
                         
                         symbols.append(method_symbol)
             
@@ -291,12 +582,17 @@ class PKGGenerator:
                 continue
             
             try:
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    source = f.read()
-                
+                source = self._read_file_with_retry(file_path)
                 module_endpoints = extract_endpoints(file_path, source, module_id, self.frameworks)
                 endpoints.extend(module_endpoints)
-            except Exception:
+            except FileNotFoundError as e:
+                self._collect_error("file_not_found", file_path, str(e))
+                continue
+            except (IOError, OSError) as e:
+                self._collect_error("io_error", file_path, f"Failed to read file: {e}")
+                continue
+            except Exception as e:
+                self._collect_error("endpoint_extraction_error", file_path, f"Unexpected error: {e}", traceback.format_exc())
                 continue
         
         return endpoints
@@ -348,43 +644,42 @@ class PKGGenerator:
         Returns:
             Complete PKG dictionary
         """
-        import logging
-        logger = logging.getLogger(__name__)
+        logger = get_logger(__name__)
         
-        logger.info(f"🏗️  STARTING PKG GENERATION | Repo: {self.repo_path}")
+        log_with_context(logger, logging.INFO, "Starting PKG generation", repo_path=self.repo_path)
         
         # Extract project metadata
-        logger.info(f"📋 EXTRACTING PROJECT METADATA | Repo: {self.repo_path}")
+        log_with_context(logger, logging.INFO, "Extracting project metadata", repo_path=self.repo_path)
         project_meta = extract_project_metadata(self.repo_path)
         project_id = project_meta.get("id", "unknown")
-        logger.info(f"✅ PROJECT METADATA EXTRACTED | Project ID: {project_id} | Name: {project_meta.get('name', 'N/A')} | Languages: {project_meta.get('languages', [])}")
+        log_with_context(logger, logging.INFO, f"Project metadata extracted | Project ID: {project_id} | Name: {project_meta.get('name', 'N/A')} | Languages: {project_meta.get('languages', [])}", repo_path=self.repo_path)
         
         # Build modules
-        logger.info(f"📦 BUILDING MODULES | Repo: {self.repo_path}")
+        log_with_context(logger, logging.INFO, "Building modules", repo_path=self.repo_path)
         self.modules = self._build_modules()
-        logger.info(f"✅ MODULES BUILT | Count: {len(self.modules)}")
+        log_with_context(logger, logging.INFO, "Modules built", repo_path=self.repo_path, count=len(self.modules))
         
         # Build symbols (need fan stats, so do a first pass)
         # For now, build symbols without fan filtering, then recalculate
-        logger.info(f"🔤 BUILDING SYMBOLS (first pass) | Repo: {self.repo_path}")
+        log_with_context(logger, logging.INFO, "Building symbols (first pass)", repo_path=self.repo_path)
         temp_symbols = self._build_symbols(self.modules, {})
         self.symbols = temp_symbols
-        logger.info(f"✅ SYMBOLS BUILT (first pass) | Count: {len(self.symbols)}")
+        log_with_context(logger, logging.INFO, "Symbols built (first pass)", repo_path=self.repo_path, count=len(self.symbols))
         
         # Build endpoints
-        logger.info(f"🌐 BUILDING ENDPOINTS | Repo: {self.repo_path}")
+        log_with_context(logger, logging.INFO, "Building endpoints", repo_path=self.repo_path)
         self.endpoints = self._build_endpoints(self.modules)
-        logger.info(f"✅ ENDPOINTS BUILT | Count: {len(self.endpoints)}")
+        log_with_context(logger, logging.INFO, "Endpoints built", repo_path=self.repo_path, count=len(self.endpoints))
         
         # Extract relationships
-        logger.info(f"🔗 EXTRACTING RELATIONSHIPS | Repo: {self.repo_path}")
+        log_with_context(logger, logging.INFO, "Extracting relationships", repo_path=self.repo_path)
         self.edges, fan_stats = extract_relationships(
             self.modules, self.symbols, self.endpoints, self.repo_path
         )
-        logger.info(f"✅ RELATIONSHIPS EXTRACTED | Edges: {len(self.edges)}")
+        log_with_context(logger, logging.INFO, "Relationships extracted", repo_path=self.repo_path, count=len(self.edges))
         
         # Populate module imports from edges
-        logger.debug(f"📥 POPULATING MODULE IMPORTS | Repo: {self.repo_path}")
+        log_with_context(logger, logging.DEBUG, "Populating module imports", repo_path=self.repo_path)
         for edge in self.edges:
             if edge.get("type") == "imports":
                 from_id = edge.get("from")
@@ -395,21 +690,21 @@ class PKGGenerator:
                             module["imports"].append(to_id)
         
         # Rebuild symbols with fan filtering
-        logger.info(f"🔤 REBUILDING SYMBOLS (with fan filtering) | Repo: {self.repo_path} | Fan threshold: {self.fan_threshold}")
+        log_with_context(logger, logging.INFO, f"Rebuilding symbols (with fan filtering) | Fan threshold: {self.fan_threshold}", repo_path=self.repo_path)
         self.symbols = self._build_symbols(self.modules, fan_stats)
-        logger.info(f"✅ SYMBOLS REBUILT | Count: {len(self.symbols)}")
+        log_with_context(logger, logging.INFO, "Symbols rebuilt", repo_path=self.repo_path, count=len(self.symbols))
         
         # Build features
         if self.include_features:
-            logger.info(f"📁 BUILDING FEATURES | Repo: {self.repo_path}")
+            log_with_context(logger, logging.INFO, "Building features", repo_path=self.repo_path)
             self.features = self._build_features(self.modules)
-            logger.info(f"✅ FEATURES BUILT | Count: {len(self.features)}")
+            log_with_context(logger, logging.INFO, "Features built", repo_path=self.repo_path, count=len(self.features))
         else:
             self.features = []
-            logger.info(f"⏭️  SKIPPING FEATURES | Repo: {self.repo_path} | include_features=False")
+            log_with_context(logger, logging.INFO, "Skipping features | include_features=False", repo_path=self.repo_path)
         
         # Clean up module definitions (remove file_path, keep only needed fields)
-        logger.debug(f"🧹 CLEANING UP MODULE DATA | Repo: {self.repo_path}")
+        log_with_context(logger, logging.DEBUG, "Cleaning up module data", repo_path=self.repo_path)
         for module in self.modules:
             module.pop("definitions", None)
             module.pop("file_path", None)
@@ -418,7 +713,7 @@ class PKGGenerator:
                 module["moduleSummary"] = None
         
         # Build final PKG
-        logger.info(f"📦 BUILDING FINAL PKG STRUCTURE | Repo: {self.repo_path}")
+        log_with_context(logger, logging.INFO, "Building final PKG structure", repo_path=self.repo_path)
         pkg = {
             "version": "1.0.0",
             "generatedAt": datetime.utcnow().isoformat() + "Z",
@@ -440,18 +735,258 @@ class PKGGenerator:
         if self.features:
             pkg["features"] = self.features
         
+        # Add error and warning metadata
+        if self.errors or self.warnings:
+            if "metadata" not in pkg["project"]:
+                pkg["project"]["metadata"] = {}
+            pkg["project"]["metadata"]["errors"] = self.errors
+            pkg["project"]["metadata"]["error_count"] = len(self.errors)
+            pkg["project"]["metadata"]["warnings"] = self.warnings
+            pkg["project"]["metadata"]["warning_count"] = len(self.warnings)
+        
+        # Validate PKG before returning
+        from utils.schema_validator import validate_pkg
+        is_valid, validation_errors = validate_pkg(pkg)
+        
+        if not is_valid:
+            error_msg = f"PKG validation failed: {'; '.join(validation_errors)}"
+            log_with_context(logger, logging.ERROR, error_msg, repo_path=self.repo_path)
+            from code_parser.exceptions import ValidationError
+            raise ValidationError(error_msg, errors=validation_errors)
+        
+        if validation_errors:
+            log_with_context(logger, logging.WARNING, f"PKG validation warnings: {'; '.join(validation_errors)}", repo_path=self.repo_path)
+        
         # Save if output path provided
         if output_path:
-            logger.info(f"💾 SAVING PKG TO FILE | Path: {output_path}")
+            log_with_context(logger, logging.INFO, f"Saving PKG to file | Path: {output_path}", repo_path=self.repo_path)
             os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(pkg, f, indent=2)
-            logger.info(f"✅ PKG SAVED TO FILE | Path: {output_path}")
+            log_with_context(logger, logging.INFO, f"PKG saved to file | Path: {output_path}", repo_path=self.repo_path)
         
-        logger.info(f"💾 STORING PKG TO NEO4J | Project ID: {project_id}")
+        log_with_context(logger, logging.INFO, f"Storing PKG to Neo4j | Project ID: {project_id}", repo_path=self.repo_path)
         neo4j_database.store_pkg(pkg)
-        logger.info(f"✅ PKG STORED TO NEO4J | Project ID: {project_id}")
+        log_with_context(logger, logging.INFO, f"PKG stored to Neo4j | Project ID: {project_id}", repo_path=self.repo_path)
 
-        logger.info(f"✅ PKG GENERATION COMPLETE | Repo: {self.repo_path} | Project ID: {project_id} | Modules: {len(self.modules)} | Symbols: {len(self.symbols)} | Edges: {len(self.edges)} | Endpoints: {len(self.endpoints)}")
-        return pkg        
+        log_with_context(logger, logging.INFO, f"PKG generation complete | Project ID: {project_id} | Modules: {len(self.modules)} | Symbols: {len(self.symbols)} | Edges: {len(self.edges)} | Endpoints: {len(self.endpoints)}", repo_path=self.repo_path)
+        return pkg
+    
+    def _identify_affected_modules(self, changed_files: List[str], edges: List[Dict[str, Any]]) -> Set[str]:
+        """
+        Identify modules affected by changes (modules that import changed modules or are imported by changed modules).
+        
+        Args:
+            changed_files: List of changed file paths (relative to repo root)
+            edges: List of edge dictionaries
+            
+        Returns:
+            Set of affected module IDs
+        """
+        # Convert changed files to module IDs
+        changed_module_ids = set()
+        for file_path in changed_files:
+            abs_path = os.path.join(self.repo_path, file_path)
+            module_id = self._generate_module_id(abs_path)
+            changed_module_ids.add(module_id)
+        
+        affected_module_ids = set(changed_module_ids)
+        
+        # Find modules that import changed modules
+        for edge in edges:
+            if edge.get("type") == "imports":
+                from_id = edge.get("from")
+                to_id = edge.get("to")
+                if to_id in changed_module_ids:
+                    affected_module_ids.add(from_id)
+                if from_id in changed_module_ids:
+                    affected_module_ids.add(to_id)
+        
+        return affected_module_ids
+    
+    def generate_pkg_incremental(
+        self,
+        changed_files: List[str],
+        base_pkg: Dict[str, Any],
+        output_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate PKG incrementally by re-parsing only changed files.
+        
+        Args:
+            changed_files: List of changed file paths (relative to repo root)
+            base_pkg: Previous PKG version
+            output_path: Optional path to save JSON file
+            
+        Returns:
+            Updated PKG dictionary
+        """
+        logger = get_logger(__name__)
+        import logging
+        
+        log_with_context(logger, logging.INFO, f"Starting incremental PKG generation | Changed files: {len(changed_files)}", repo_path=self.repo_path)
+        
+        # Extract project metadata
+        project_meta = extract_project_metadata(self.repo_path)
+        project_id = project_meta.get("id", "unknown")
+        
+        # Identify changed module IDs
+        changed_module_ids = set()
+        for file_path in changed_files:
+            abs_path = os.path.join(self.repo_path, file_path)
+            module_id = self._generate_module_id(abs_path)
+            changed_module_ids.add(module_id)
+        
+        # Identify affected modules
+        base_edges = base_pkg.get("edges", [])
+        affected_module_ids = self._identify_affected_modules(changed_files, base_edges)
+        log_with_context(logger, logging.INFO, f"Affected modules: {len(affected_module_ids)}", repo_path=self.repo_path, count=len(affected_module_ids))
+        
+        # Preserve unchanged modules
+        base_modules = {m["id"]: m for m in base_pkg.get("modules", [])}
+        base_symbols = {s["id"]: s for s in base_pkg.get("symbols", [])}
+        base_endpoints = {e["id"]: e for e in base_pkg.get("endpoints", [])}
+        
+        # Re-parse changed files
+        updated_modules = []
+        for file_path in changed_files:
+            abs_path = os.path.join(self.repo_path, file_path)
+            if not os.path.exists(abs_path):
+                # File was deleted, skip
+                continue
+            
+            try:
+                language = detect_language(abs_path)
+                if not language:
+                    continue
+                
+                module_id = self._generate_module_id(abs_path)
+                rel_path = os.path.relpath(abs_path, self.repo_path).replace(os.sep, '/')
+                
+                # Parse file
+                try:
+                    definitions = extract_definitions(abs_path)
+                    if not definitions:
+                        continue
+                except ParseError as e:
+                    self._collect_error("parse_error", abs_path, str(e), traceback.format_exc())
+                    continue
+                
+                # Calculate hash and LOC
+                file_hash = self._calculate_file_hash(abs_path)
+                loc = self._count_lines_of_code(abs_path)
+                
+                # Detect module kind
+                kinds = self._detect_module_kind(abs_path, definitions, self.frameworks)
+                
+                # Extract imports
+                raw_imports = []
+                if "imports" in definitions:
+                    raw_imports = definitions["imports"]
+                
+                # Build module object
+                module = {
+                    "id": module_id,
+                    "path": rel_path,
+                    "kind": kinds,
+                    "loc": loc,
+                    "hash": file_hash,
+                    "exports": [],
+                    "imports": [],
+                    "definitions": definitions,
+                    "file_path": abs_path,
+                    "raw_imports": raw_imports
+                }
+                
+                updated_modules.append(module)
+            
+            except Exception as e:
+                self._collect_error("incremental_parse_error", abs_path, f"Unexpected error: {e}", traceback.format_exc())
+                continue
+        
+        # Update modules list (replace changed, keep unchanged)
+        final_modules = []
+        for module_id, module in base_modules.items():
+            if module_id not in changed_module_ids:
+                final_modules.append(module)
+        
+        final_modules.extend(updated_modules)
+        self.modules = final_modules
+        
+        # Re-extract symbols for changed modules
+        updated_symbols = []
+        for module in updated_modules:
+            module_id = module["id"]
+            definitions = module.get("definitions", {})
+            
+            # Extract symbols (simplified - full extraction would use _build_symbols)
+            functions = definitions.get("functions", [])
+            for func in functions:
+                func_name = func.get("name")
+                if func_name:
+                    symbol_id = self._generate_symbol_id(module_id, func_name)
+                    if symbol_id in base_symbols:
+                        # Update existing symbol
+                        symbol = base_symbols[symbol_id].copy()
+                        # Update fields as needed
+                        updated_symbols.append(symbol)
+                    else:
+                        # New symbol
+                        symbol = {
+                            "id": symbol_id,
+                            "moduleId": module_id,
+                            "name": func_name,
+                            "kind": "function",
+                            "isExported": True,
+                            "signature": f"{func_name}({func.get('parameters', '')})",
+                            "visibility": "public"
+                        }
+                        updated_symbols.append(symbol)
+        
+        # Remove symbols from changed modules, add updated ones
+        final_symbols = []
+        for symbol_id, symbol in base_symbols.items():
+            module_id = symbol.get("moduleId")
+            if module_id not in changed_module_ids:
+                final_symbols.append(symbol)
+        
+        final_symbols.extend(updated_symbols)
+        self.symbols = final_symbols
+        
+        # Re-extract relationships for affected modules
+        affected_modules_list = [m for m in self.modules if m["id"] in affected_module_ids]
+        self.edges, fan_stats = extract_relationships(
+            self.modules, self.symbols, self.endpoints, self.repo_path
+        )
+        
+        # Recalculate fan-in/fan-out for affected modules
+        # (fan_stats already calculated above)
+        
+        # Update git SHA and timestamp
+        updated_pkg = base_pkg.copy()
+        updated_pkg["generatedAt"] = datetime.utcnow().isoformat() + "Z"
+        updated_pkg["gitSha"] = project_meta.get("gitSha")
+        updated_pkg["modules"] = self.modules
+        updated_pkg["symbols"] = self.symbols
+        updated_pkg["edges"] = self.edges
+        
+        # Validate updated PKG
+        from utils.schema_validator import validate_pkg
+        is_valid, validation_errors = validate_pkg(updated_pkg)
+        
+        if not is_valid:
+            error_msg = f"Incremental PKG validation failed: {'; '.join(validation_errors)}"
+            log_with_context(logger, logging.ERROR, error_msg, repo_path=self.repo_path)
+            from code_parser.exceptions import ValidationError
+            raise ValidationError(error_msg, errors=validation_errors)
+        
+        # Save if output path provided
+        if output_path:
+            log_with_context(logger, logging.INFO, f"Saving incremental PKG to file | Path: {output_path}", repo_path=self.repo_path)
+            os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(updated_pkg, f, indent=2)
+        
+        log_with_context(logger, logging.INFO, f"Incremental PKG generation complete | Modules: {len(self.modules)} | Symbols: {len(self.symbols)} | Edges: {len(self.edges)}", repo_path=self.repo_path)
+        return updated_pkg        
 

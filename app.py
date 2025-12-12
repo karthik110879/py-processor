@@ -1,27 +1,22 @@
 """Main Flask application for PDF processor microservice."""
 
 import logging
-import os
 import socket
 import sys
 from datetime import datetime
 from flask import Flask
-from dotenv import load_dotenv
 
 from routes.pdf_routes import pdf_bp
+from utils.config import Config
+from utils.logging_config import setup_logging, get_logger
 
-# Load environment variables
-load_dotenv()
+# Get configuration
+config = Config()
 
-# Configure logging with enhanced format for better debugging
-log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-logging.basicConfig(
-    level=getattr(logging, log_level, logging.INFO),
-    format='%(asctime)s | %(levelname)-8s | %(name)-30s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# Setup standardized logging
+setup_logging(level=config.log_level, structured=config.log_structured)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Import SocketIO for WebSocket support
 socketio = None  # Will be initialized in create_app
@@ -42,8 +37,8 @@ def create_app() -> Flask:
     app = Flask(__name__)
     
     # Configuration
-    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-    app.config['UPLOAD_FOLDER'] = os.getenv('UPLOAD_FOLDER', '/tmp')
+    app.config['MAX_CONTENT_LENGTH'] = config.max_file_size
+    app.config['UPLOAD_FOLDER'] = config.upload_folder
     
     # Enable CORS for NestJS communication
     try:
@@ -97,17 +92,17 @@ def create_app() -> Flask:
     global socketio
     if SocketIO is not None:
         # Get CORS origins - support both wildcard and specific origins
-        cors_origins_env = os.getenv('WEBSOCKET_CORS_ORIGINS', '*')
+        cors_origins_env = config.websocket_cors_origins
         if cors_origins_env == '*':
             cors_origins = '*'
         else:
             # Support comma-separated list of origins
             cors_origins = [origin.strip() for origin in cors_origins_env.split(',')]
         
-        async_mode = os.getenv('WEBSOCKET_ASYNC_MODE', 'eventlet')
+        async_mode = config.websocket_async_mode
         # Configure ping/pong settings to prevent premature timeouts
-        ping_timeout = int(os.getenv('WEBSOCKET_PING_TIMEOUT', '60'))  # Default 60 seconds
-        ping_interval = int(os.getenv('WEBSOCKET_PING_INTERVAL', '25'))  # Default 25 seconds
+        ping_timeout = config.websocket_ping_timeout
+        ping_interval = config.websocket_ping_interval
         
         socketio = SocketIO(
             app, 
@@ -219,11 +214,11 @@ def main() -> None:
     """Run the Flask application."""
     app = create_app()
     
-    # Get configuration from environment
-    host = os.getenv('HOST', '0.0.0.0')
-    port = int(os.getenv('PORT', 5001))
-    debug = os.getenv('DEBUG', 'False').lower() == 'true'
-    allow_port_fallback = os.getenv('ALLOW_PORT_FALLBACK', 'True').lower() == 'true'
+    # Get configuration
+    host = config.host
+    port = config.port
+    debug = config.debug
+    allow_port_fallback = True  # Default behavior
     
     # Check if port is available
     if not is_port_available(host, port):

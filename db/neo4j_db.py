@@ -1,28 +1,27 @@
 """Neo4j database operations for storing and querying PKG data."""
 
 import json
-import os
 import logging
 import time
 from contextlib import contextmanager
 from typing import Dict, Any, List, Optional
-from dotenv import load_dotenv
 from neo4j import GraphDatabase, Session, Transaction
 
-# Load .env file
-load_dotenv()
+from utils.config import Config
+from utils.logging_config import get_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# Read env vars
-uri = os.getenv("NEO4J_URI")
-user = os.getenv("NEO4J_USER")
-password = os.getenv("NEO4J_PASSWORD")
-database = os.getenv("NEO4J_DATABASE", "repos")
-max_retries = int(os.getenv("NEO4J_MAX_RETRIES", "3"))
-retry_delay = float(os.getenv("NEO4J_RETRY_DELAY", "1.0"))
-batch_size = int(os.getenv("NEO4J_BATCH_SIZE", "1000"))
+# Get configuration
+config = Config()
+uri = config.neo4j_uri
+user = config.neo4j_user
+password = config.neo4j_password
+database = config.neo4j_database
+max_retries = config.neo4j_max_retries
+retry_delay = config.neo4j_retry_delay
+batch_size = config.neo4j_batch_size
 
 # Global driver instance
 driver: Optional[GraphDatabase.driver] = None
@@ -96,7 +95,7 @@ def _create_indexes(driver_instance: GraphDatabase.driver) -> None:
             
             # Vector index for embeddings (Neo4j 5.x+)
             try:
-                embedding_dim = int(os.getenv("EMBEDDING_DIMENSION", "1536"))
+                embedding_dim = config.embedding_dimension
                 session.run(f"""
                     CREATE VECTOR INDEX symbol_embedding_index IF NOT EXISTS
                     FOR (s:Symbol) ON s.embedding
@@ -236,12 +235,16 @@ def _store_project_tx(tx: Transaction, pkg: Dict[str, Any]) -> None:
         MERGE (proj:Project {id: $project_id})
         SET proj.name = $name,
             proj.rootPath = $rootPath,
-            proj.languages = $languages
+            proj.languages = $languages,
+            proj.frameworks = $frameworks,
+            proj.buildTools = $buildTools
     """, {
         "project_id": project_id,
         "name": project.get("name", ""),
         "rootPath": project.get("rootPath", ""),
-        "languages": project.get("languages", [])
+        "languages": project.get("languages", []),
+        "frameworks": project.get("frameworks", []),
+        "buildTools": project.get("buildTools", [])
     })
     
     # Create Metadata node
@@ -820,7 +823,9 @@ def load_pkg_from_neo4j(project_id: str, version: Optional[str] = None) -> Optio
                     "id": proj_node.get("id", project_id),
                     "name": proj_node.get("name", ""),
                     "rootPath": proj_node.get("rootPath", ""),
-                    "languages": proj_node.get("languages", [])
+                    "languages": proj_node.get("languages", []),
+                    "frameworks": proj_node.get("frameworks", []),
+                    "buildTools": proj_node.get("buildTools", [])
                 }
                 if record["m"]:
                     meta_node = record["m"]

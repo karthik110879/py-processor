@@ -7,6 +7,24 @@ from typing import List, Set, Dict, Any
 from pathlib import Path
 
 
+def _should_exclude_path(file_path: Path, repo_path: Path) -> bool:
+    """
+    Check if path should be excluded from framework detection.
+    
+    Args:
+        file_path: Path to check
+        repo_path: Root path of the repository
+        
+    Returns:
+        True if path should be excluded (contains cloned_repos), False otherwise
+    """
+    try:
+        relative_path = file_path.relative_to(repo_path)
+        return "cloned_repos" in relative_path.parts
+    except ValueError:
+        return False
+
+
 def detect_frameworks_from_package_files(repo_path: str) -> Set[str]:
     """
     Detect frameworks from package manager files.
@@ -102,6 +120,9 @@ def detect_frameworks_from_package_files(repo_path: str) -> Set[str]:
     
     # .NET frameworks
     for csproj_file in repo_path_obj.rglob("*.csproj"):
+        # Skip files in cloned_repos directory
+        if _should_exclude_path(csproj_file, repo_path_obj):
+            continue
         try:
             with open(csproj_file, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -153,6 +174,12 @@ def detect_frameworks_from_static_analysis(repo_path: str) -> Set[str]:
             r"@app\.(get|post|put|delete)\(",
             r"@router\.(get|post|put|delete)\(",
         ],
+        "flask": [
+            r"from flask import",
+            r"@app\.route\(",
+            r"Flask\(",
+            r"flask\.",
+        ],
         "spring-boot": [
             r"@RestController",
             r"@Controller",
@@ -190,9 +217,16 @@ def detect_frameworks_from_static_analysis(repo_path: str) -> Set[str]:
         if not src_path.exists():
             continue
         
+        # Skip source directories inside cloned_repos
+        if _should_exclude_path(src_path, repo_path_obj):
+            continue
+        
         # Search in TypeScript/JavaScript files
         for ext in ["*.ts", "*.js", "*.tsx", "*.jsx"]:
             for file_path in src_path.rglob(ext):
+                # Skip files in cloned_repos directory
+                if _should_exclude_path(file_path, repo_path_obj):
+                    continue
                 try:
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read()
@@ -206,11 +240,14 @@ def detect_frameworks_from_static_analysis(repo_path: str) -> Set[str]:
         
         # Search in Python files
         for file_path in src_path.rglob("*.py"):
+            # Skip files in cloned_repos directory
+            if _should_exclude_path(file_path, repo_path_obj):
+                continue
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
                     for framework, pattern_list in patterns.items():
-                        if framework == "fastapi":
+                        if framework in ("fastapi", "flask"):
                             for pattern in pattern_list:
                                 if re.search(pattern, content, re.IGNORECASE):
                                     frameworks.add(framework)
@@ -220,6 +257,9 @@ def detect_frameworks_from_static_analysis(repo_path: str) -> Set[str]:
         
         # Search in Java files
         for file_path in src_path.rglob("*.java"):
+            # Skip files in cloned_repos directory
+            if _should_exclude_path(file_path, repo_path_obj):
+                continue
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
@@ -234,6 +274,9 @@ def detect_frameworks_from_static_analysis(repo_path: str) -> Set[str]:
         
         # Search in C# files
         for file_path in src_path.rglob("*.cs"):
+            # Skip files in cloned_repos directory
+            if _should_exclude_path(file_path, repo_path_obj):
+                continue
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
@@ -257,15 +300,47 @@ def detect_frameworks(repo_path: str) -> List[str]:
         repo_path: Root path of the repository
         
     Returns:
-        List of detected framework names (sorted)
+        List of detected framework names (sorted, with root-level Python frameworks prioritized)
     """
     frameworks = set()
+    repo_path_obj = Path(repo_path)
+    
+    # Prioritize root-level requirements.txt - check it first
+    root_requirements = repo_path_obj / "requirements.txt"
+    root_python_frameworks = set()
+    if root_requirements.exists():
+        try:
+            with open(root_requirements, 'r', encoding='utf-8') as f:
+                content = f.read().lower()
+                if "flask" in content:
+                    root_python_frameworks.add("flask")
+                if "fastapi" in content:
+                    root_python_frameworks.add("fastapi")
+                if "django" in content:
+                    root_python_frameworks.add("django")
+        except Exception:
+            pass
     
     # Detect from package files
     frameworks.update(detect_frameworks_from_package_files(repo_path))
     
     # Detect from static analysis
     frameworks.update(detect_frameworks_from_static_analysis(repo_path))
+    
+    # If root-level Python frameworks were found, prioritize them
+    # by moving them to the front of the sorted list
+    if root_python_frameworks:
+        all_frameworks = sorted(list(frameworks))
+        prioritized = []
+        # Add root Python frameworks first
+        for fw in sorted(root_python_frameworks):
+            if fw in all_frameworks:
+                prioritized.append(fw)
+        # Add remaining frameworks
+        for fw in all_frameworks:
+            if fw not in prioritized:
+                prioritized.append(fw)
+        return prioritized
     
     return sorted(list(frameworks))
 

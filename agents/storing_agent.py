@@ -1,4 +1,5 @@
 import os
+from utils.config import Config
 try:
     from langchain_core.tools import tool
 except ImportError:
@@ -51,9 +52,10 @@ def store_vectors(payload: Dict[str, Any]) -> int:
             raise ValueError("Chunks must be a non-empty list")
         
         # Initialize OpenAI embeddings
+        config = Config()
         embeddings = OpenAIEmbeddings(
             model="text-embedding-3-large",  # or "text-embedding-3-large"
-            openai_api_key=os.getenv("OPENAI_API_KEY")
+            openai_api_key=config.openai_api_key
         )
         
         # Generate vectors
@@ -118,7 +120,8 @@ def search_vectors(query: str, limit: int = 5) -> str:
     """
     try:
         # Initialize OpenAI embeddings
-        api_key = os.getenv("OPENAI_API_KEY")
+        config = Config()
+        api_key = config.openai_api_key
         if not api_key:
             return "Error: OPENAI_API_KEY environment variable not set"
         

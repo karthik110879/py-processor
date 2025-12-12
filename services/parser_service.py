@@ -7,9 +7,10 @@ from code_parser.parser import parse_typescript
 from code_parser.normalizer import extract_python_definitions, extract_ts_definitions
 from code_parser.project_metadata import get_git_sha
 from utils.file_utils import collect_files
+from utils.logging_config import get_logger
 from services.pkg_generator import PKGGenerator
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def file_to_json(file_path: str) -> Optional[Dict[str, Any]]:
@@ -69,9 +70,9 @@ def repo_to_json(repo_path: str, output_path: str = "output/repo_parsed.json") -
 def generate_pkg(
     repo_path: str,
     output_path: Optional[str] = None,
-    fan_threshold: int = 3,
-    include_features: bool = True,
-    use_cache: bool = True
+    fan_threshold: Optional[int] = None,
+    include_features: Optional[bool] = None,
+    use_cache: Optional[bool] = None
 ) -> Dict[str, Any]:
     """
     Generate Project Knowledge Graph (PKG) JSON following project-schema.json.
@@ -82,13 +83,24 @@ def generate_pkg(
     Args:
         repo_path: Root path of the repository
         output_path: Optional path to save JSON file (defaults to {repo_path}/pkg.json)
-        fan_threshold: Fan-in threshold for filtering detailed symbol info (default: 3)
-        include_features: Whether to include feature groupings (default: True)
-        use_cache: Whether to use cached PKG if available and valid (default: True)
+        fan_threshold: Fan-in threshold for filtering detailed symbol info (defaults to config)
+        include_features: Whether to include feature groupings (defaults to config)
+        use_cache: Whether to use cached PKG if available and valid (defaults to config)
         
     Returns:
         Complete PKG dictionary
     """
+    from utils.config import Config
+    config = Config()
+    
+    # Use config defaults if not provided
+    if fan_threshold is None:
+        fan_threshold = config.fan_threshold
+    if include_features is None:
+        include_features = config.include_features
+    if use_cache is None:
+        use_cache = config.cache_enabled
+    
     # Determine output path - default to repo_path/pkg.json if not specified
     if output_path is None:
         output_path = os.path.join(repo_path, 'pkg.json')

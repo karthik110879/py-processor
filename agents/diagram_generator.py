@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from services.pkg_query_engine import PKGQueryEngine
 from langchain_openai import ChatOpenAI
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -1306,19 +1307,16 @@ class DiagramGenerator:
     def _init_llm(self) -> None:
         """Initialize LLM for architecture diagram generation."""
         try:
-            api_key = os.getenv("OPENAI_API_KEY")
+            config = Config()
+            api_key = config.openai_api_key
             if not api_key:
                 logger.warning("OPENAI_API_KEY not set, architecture diagram generation will be limited")
                 return
             
-            model = os.getenv("LLM_MODEL", "gpt-4")
-            temperature = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-            max_tokens = int(os.getenv("LLM_MAX_TOKENS", "4000"))
-            
             self.llm = ChatOpenAI(
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                model=config.llm_model,
+                temperature=config.llm_temperature,
+                max_tokens=config.llm_max_tokens,
                 openai_api_key=api_key
             )
             logger.debug("LLM initialized for architecture diagram generation")

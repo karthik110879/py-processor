@@ -2,17 +2,159 @@
 
 import os
 import re
+import json
 from typing import List, Dict, Any, Set, Tuple, Optional
 from pathlib import Path
 
 from code_parser.multi_parser import detect_language, parse_file
 from code_parser.multi_normalizer import extract_definitions
 from code_parser.normalizer import get_text
+from code_parser.exceptions import ImportResolutionError
+
+
+def _load_tsconfig_paths(repo_path: str) -> Dict[str, List[str]]:
+    """
+    Load and parse tsconfig.json or jsconfig.json path mappings.
+    
+    Args:
+        repo_path: Repository root path
+        
+    Returns:
+        Dictionary mapping path patterns to replacement paths
+    """
+    path_mappings = {}
+    config_files = [
+        Path(repo_path) / "tsconfig.json",
+        Path(repo_path) / "jsconfig.json"
+    ]
+    
+    for config_file in config_files:
+        if config_file.exists():
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                compiler_options = config.get("compilerOptions", {})
+                paths = compiler_options.get("paths", {})
+                base_url = compiler_options.get("baseUrl", ".")
+                
+                for pattern, replacements in paths.items():
+                    # Normalize pattern (remove trailing /*)
+                    pattern_key = pattern.rstrip('/*')
+                    # Convert replacements to absolute paths
+                    resolved_replacements = []
+                    for replacement in replacements:
+                        if isinstance(replacement, str):
+                            # Remove leading ./ and trailing /*
+                            replacement = replacement.lstrip('./').rstrip('/*')
+                            resolved_path = os.path.join(repo_path, base_url, replacement)
+                            resolved_replacements.append(resolved_path)
+                    path_mappings[pattern_key] = resolved_replacements
+                
+                break  # Use first found config file
+            except (json.JSONDecodeError, KeyError, IOError):
+                continue
+    
+    return path_mappings
+
+
+def _find_index_file(directory: Path, extensions: List[str]) -> Optional[Path]:
+    """
+    Find index file in directory (index.ts, index.js, __init__.py, etc.).
+    
+    Args:
+        directory: Directory to search
+        extensions: List of extensions to try (e.g., ['.ts', '.js', '.tsx'])
+        
+    Returns:
+        Path to index file or None if not found
+    """
+    index_names = ["index", "__init__"]
+    
+    for index_name in index_names:
+        for ext in extensions:
+            index_path = directory / f"{index_name}{ext}"
+            if index_path.exists():
+                return index_path
+    
+    return None
+
+
+def _load_package_json_exports(repo_path: str) -> Dict[str, Any]:
+    """
+    Load package.json exports field.
+    
+    Args:
+        repo_path: Repository root path
+        
+    Returns:
+        Dictionary with exports configuration
+    """
+    package_json = Path(repo_path) / "package.json"
+    
+    if package_json.exists():
+        try:
+            with open(package_json, 'r', encoding='utf-8') as f:
+                package_data = json.load(f)
+            return package_data.get("exports", {})
+        except (json.JSONDecodeError, IOError):
+            pass
+    
+    return {}
+
+
+def _resolve_with_path_mappings(import_path: str, current_file: str, repo_path: str, path_mappings: Dict[str, List[str]]) -> Optional[str]:
+    """
+    Resolve import using tsconfig/jsconfig path mappings.
+    
+    Args:
+        import_path: Import path to resolve
+        current_file: Current file path
+        repo_path: Repository root path
+        path_mappings: Path mappings from tsconfig
+        
+    Returns:
+        Resolved module ID or None
+    """
+    # Try exact match first
+    if import_path in path_mappings:
+        for replacement in path_mappings[import_path]:
+            resolved_path = Path(replacement)
+            if resolved_path.exists() and resolved_path.is_file():
+                rel_path = os.path.relpath(resolved_path, repo_path)
+                return f"mod:{rel_path}"
+            elif resolved_path.exists() and resolved_path.is_dir():
+                # Try to find index file
+                index_file = _find_index_file(resolved_path, ['.ts', '.tsx', '.js', '.jsx'])
+                if index_file:
+                    rel_path = os.path.relpath(index_file, repo_path)
+                    return f"mod:{rel_path}"
+    
+    # Try pattern matching (e.g., @app/* -> src/app/*)
+    for pattern, replacements in path_mappings.items():
+        if '*' in pattern:
+            pattern_prefix = pattern.replace('*', '')
+            if import_path.startswith(pattern_prefix):
+                suffix = import_path[len(pattern_prefix):]
+                for replacement in replacements:
+                    if '*' in replacement:
+                        resolved = replacement.replace('*', suffix)
+                        resolved_path = Path(resolved)
+                        if resolved_path.exists() and resolved_path.is_file():
+                            rel_path = os.path.relpath(resolved_path, repo_path)
+                            return f"mod:{rel_path}"
+                        elif resolved_path.exists() and resolved_path.is_dir():
+                            index_file = _find_index_file(resolved_path, ['.ts', '.tsx', '.js', '.jsx'])
+                            if index_file:
+                                rel_path = os.path.relpath(index_file, repo_path)
+                                return f"mod:{rel_path}"
+    
+    return None
 
 
 def resolve_import_path(import_stmt: str, current_file: str, repo_path: str) -> Optional[str]:
     """
-    Resolve an import statement to a module ID.
+    Resolve an import statement to a module ID with enhanced resolution strategies.
     
     Args:
         import_stmt: Import statement text
@@ -22,42 +164,114 @@ def resolve_import_path(import_stmt: str, current_file: str, repo_path: str) -> 
     Returns:
         Module ID or None if cannot resolve
     """
-    # This is a simplified resolver - can be enhanced
-    # For now, try to match common patterns
+    repo_path_obj = Path(repo_path)
+    current_file_obj = Path(current_file)
+    current_dir = current_file_obj.parent
     
-    # Python: from module import X or import module
+    # Load path mappings and package.json exports (cached per call for now)
+    path_mappings = _load_tsconfig_paths(repo_path)
+    package_exports = _load_package_json_exports(repo_path)
+    
+    # Strategy 1: Python imports
     if "from" in import_stmt and "import" in import_stmt:
         match = re.search(r'from\s+([\w.]+)\s+import', import_stmt)
         if match:
-            module_path = match.group(1).replace('.', os.sep)
-            # Try to find the file
-            current_dir = os.path.dirname(current_file)
-            possible_paths = [
-                os.path.join(current_dir, module_path + '.py'),
-                os.path.join(repo_path, module_path.replace('.', os.sep) + '.py'),
-            ]
-            for path in possible_paths:
-                if os.path.exists(path):
-                    rel_path = os.path.relpath(path, repo_path)
+            module_path = match.group(1)
+            # Try relative path first
+            module_path_parts = module_path.split('.')
+            possible_dir = current_dir
+            for part in module_path_parts:
+                possible_dir = possible_dir / part
+            
+            # Try __init__.py
+            init_file = possible_dir / "__init__.py"
+            if init_file.exists():
+                rel_path = os.path.relpath(init_file, repo_path)
+                return f"mod:{rel_path}"
+            
+            # Try .py file
+            py_file = possible_dir.with_suffix('.py')
+            if py_file.exists():
+                rel_path = os.path.relpath(py_file, repo_path)
+                return f"mod:{rel_path}"
+            
+            # Try absolute from repo root
+            abs_path = repo_path_obj
+            for part in module_path_parts:
+                abs_path = abs_path / part
+            py_file = abs_path.with_suffix('.py')
+            if py_file.exists():
+                rel_path = os.path.relpath(py_file, repo_path)
+                return f"mod:{rel_path}"
+            
+            # Try directory with __init__.py
+            if abs_path.exists() and abs_path.is_dir():
+                init_file = abs_path / "__init__.py"
+                if init_file.exists():
+                    rel_path = os.path.relpath(init_file, repo_path)
                     return f"mod:{rel_path}"
     
-    # TypeScript/JavaScript: import X from 'path'
-    match = re.search(r"from\s+['\"]([^'\"]+)['\"]", import_stmt)
+    # Strategy 2: TypeScript/JavaScript imports
+    match = re.search(r"from\s+['\"]([^'\"]+)['\"]|import\s+.*from\s+['\"]([^'\"]+)['\"]", import_stmt)
     if match:
-        import_path = match.group(1)
-        # Resolve relative imports
+        import_path = match.group(1) or match.group(2)
+        
+        # Strategy 2a: Path mappings (tsconfig/jsconfig)
+        if path_mappings:
+            resolved = _resolve_with_path_mappings(import_path, current_file, repo_path, path_mappings)
+            if resolved:
+                return resolved
+        
+        # Strategy 2b: Relative imports
         if import_path.startswith('.'):
-            current_dir = os.path.dirname(current_file)
-            resolved = os.path.normpath(os.path.join(current_dir, import_path))
-            if os.path.exists(resolved + '.ts'):
-                rel_path = os.path.relpath(resolved + '.ts', repo_path)
-                return f"mod:{rel_path}"
-            elif os.path.exists(resolved + '.tsx'):
-                rel_path = os.path.relpath(resolved + '.tsx', repo_path)
-                return f"mod:{rel_path}"
-            elif os.path.exists(resolved + '.js'):
-                rel_path = os.path.relpath(resolved + '.js', repo_path)
-                return f"mod:{rel_path}"
+            # Normalize relative path
+            if import_path.startswith('./'):
+                import_path = import_path[2:]
+            elif import_path.startswith('../'):
+                # Count ../ to go up directories
+                up_count = len(import_path) - len(import_path.lstrip('../'))
+                up_count = up_count // 3  # '../' is 3 chars
+                target_dir = current_dir
+                for _ in range(up_count):
+                    target_dir = target_dir.parent
+                import_path = import_path.lstrip('../')
+            else:
+                import_path = import_path.lstrip('.')
+            
+            # Try direct file match
+            for ext in ['.ts', '.tsx', '.js', '.jsx', '.mjs']:
+                file_path = (current_dir / import_path).with_suffix(ext) if not import_path.endswith(ext) else (current_dir / import_path)
+                if file_path.exists() and file_path.is_file():
+                    rel_path = os.path.relpath(file_path, repo_path)
+                    return f"mod:{rel_path}"
+            
+            # Try directory with index file
+            dir_path = current_dir / import_path
+            if dir_path.exists() and dir_path.is_dir():
+                index_file = _find_index_file(dir_path, ['.ts', '.tsx', '.js', '.jsx', '.mjs'])
+                if index_file:
+                    rel_path = os.path.relpath(index_file, repo_path)
+                    return f"mod:{rel_path}"
+        
+        # Strategy 2c: Absolute imports (from repo root)
+        else:
+            # Try direct file
+            for ext in ['.ts', '.tsx', '.js', '.jsx', '.mjs']:
+                file_path = (repo_path_obj / import_path).with_suffix(ext) if not import_path.endswith(ext) else (repo_path_obj / import_path)
+                if file_path.exists() and file_path.is_file():
+                    rel_path = os.path.relpath(file_path, repo_path)
+                    return f"mod:{rel_path}"
+            
+            # Try directory with index
+            dir_path = repo_path_obj / import_path
+            if dir_path.exists() and dir_path.is_dir():
+                index_file = _find_index_file(dir_path, ['.ts', '.tsx', '.js', '.jsx', '.mjs'])
+                if index_file:
+                    rel_path = os.path.relpath(index_file, repo_path)
+                    return f"mod:{rel_path}"
+        
+        # Strategy 2d: package.json exports (for external packages, we skip for now)
+        # This would require node_modules resolution which is complex
     
     return None
 

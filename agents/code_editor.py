@@ -6,6 +6,7 @@ import subprocess
 from typing import Dict, Any, List, Optional
 from git import Repo, InvalidGitRepositoryError
 from git.exc import GitCommandError
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -418,15 +419,15 @@ class CodeEditExecutor:
         """
         try:
             from langchain_openai import ChatOpenAI
-            import os
             
-            api_key = os.getenv("OPENAI_API_KEY")
+            config = Config()
+            api_key = config.openai_api_key
             if not api_key:
                 logger.warning("OPENAI_API_KEY not set, skipping LLM edit")
                 return original_content
             
             llm = ChatOpenAI(
-                model=os.getenv("LLM_MODEL", "gpt-4"),
+                model=config.llm_model,
                 temperature=0.1,
                 openai_api_key=api_key
             )
@@ -620,15 +621,15 @@ Preserve code style and formatting. Make minimal, targeted changes.
         """
         try:
             from langchain_openai import ChatOpenAI
-            import os
             
-            api_key = os.getenv("OPENAI_API_KEY")
+            config = Config()
+            api_key = config.openai_api_key
             if not api_key:
                 logger.warning("OPENAI_API_KEY not set, cannot generate file content")
                 return ""
             
             llm = ChatOpenAI(
-                model=os.getenv("LLM_MODEL", "gpt-4"),
+                model=config.llm_model,
                 temperature=0.1,
                 openai_api_key=api_key
             )
@@ -876,8 +877,9 @@ The file should be ready to use and follow the same patterns as related modules 
         
         try:
             # Configure git user if not set
-            git_user_name = os.getenv('GIT_USER_NAME', 'Agent')
-            git_user_email = os.getenv('GIT_USER_EMAIL', 'agent@example.com')
+            config = Config()
+            git_user_name = config.git_user_name or 'Agent'
+            git_user_email = config.git_user_email or 'agent@example.com'
             
             self.repo.config_writer().set_value("user", "name", git_user_name).release()
             self.repo.config_writer().set_value("user", "email", git_user_email).release()

@@ -3,6 +3,7 @@
 import os
 from typing import Optional
 from tree_sitter import Language, Parser, Node
+from code_parser.exceptions import ParseError
 
 try:
     import tree_sitter_python as tspython
@@ -113,8 +114,10 @@ def parse_file(file_path: str) -> Optional[Node]:
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             source = f.read()
-    except Exception:
-        return None
+    except FileNotFoundError:
+        raise ParseError(f"File not found: {file_path}", file_path=file_path)
+    except (IOError, OSError) as e:
+        raise ParseError(f"Failed to read file: {e}", file_path=file_path)
     
     # Select parser based on language
     parser = None

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import re
 from typing import Dict, Any, Optional, List
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,8 @@ class TestRunner:
     def _run_python_tests(self) -> Dict[str, Any]:
         """Run Python tests using pytest."""
         try:
-            timeout = int(os.getenv('TEST_RUNNER_TIMEOUT', '300'))
+            config = Config()
+            timeout = config.test_runner_timeout
             
             # Check if pytest is available
             result = subprocess.run(
@@ -156,7 +158,8 @@ class TestRunner:
     def _run_typescript_tests(self) -> Dict[str, Any]:
         """Run TypeScript/JavaScript tests."""
         try:
-            timeout = int(os.getenv('TEST_RUNNER_TIMEOUT', '300'))
+            config = Config()
+            timeout = config.test_runner_timeout
             
             # Check for package.json and test script
             package_json_path = os.path.join(self.repo_path, 'package.json')
@@ -210,7 +213,8 @@ class TestRunner:
     def _run_java_tests(self) -> Dict[str, Any]:
         """Run Java tests using Maven or Gradle."""
         try:
-            timeout = int(os.getenv('TEST_RUNNER_TIMEOUT', '300'))
+            config = Config()
+            timeout = config.test_runner_timeout
             
             # Try Maven first
             if os.path.exists(os.path.join(self.repo_path, 'pom.xml')):
@@ -271,7 +275,8 @@ class TestRunner:
     def _run_csharp_tests(self) -> Dict[str, Any]:
         """Run C# tests using dotnet."""
         try:
-            timeout = int(os.getenv('TEST_RUNNER_TIMEOUT', '300'))
+            config = Config()
+            timeout = config.test_runner_timeout
             
             result = subprocess.run(
                 ['dotnet', 'test'],

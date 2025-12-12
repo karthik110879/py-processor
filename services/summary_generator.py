@@ -2,6 +2,7 @@
 
 import os
 from typing import Dict, Any, List, Optional
+from utils.config import Config
 
 try:
     from langchain_openai import ChatOpenAI
@@ -120,7 +121,8 @@ def generate_summaries(pkg_data: Dict[str, Any]) -> Dict[str, Any]:
     if not LANGCHAIN_AVAILABLE:
         return pkg_data
     
-    api_key = os.getenv("OPENAI_API_KEY")
+    config = Config()
+    api_key = config.openai_api_key
     if not api_key:
         # Skip summary generation if API key not available
         return pkg_data

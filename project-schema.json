@@ -28,6 +28,16 @@
             "type": "array",
             "items": { "type": "string" }
           },
+          "frameworks": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "List of detected frameworks (e.g., ['angular', 'react', 'nestjs'])"
+          },
+          "buildTools": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "List of build tools (e.g., ['npm', 'maven', 'gradle'])"
+          },
           "summary": { "type": "string" },
           "metadata": {
             "type": "object",
@@ -83,7 +93,12 @@
               "description": "Direct import edge targets (module IDs)",
               "items": { "type": "string" }
             },
-            "moduleSummary": { "type": "string" },
+            "raw_imports": {
+              "type": "array",
+              "description": "Raw import statements from source code (before resolution to module IDs)",
+              "items": { "type": "string" }
+            },
+            "moduleSummary": { "type": ["string", "null"], "description": "Optional summary of the module" },
             "metadata": { "type": "object", "additionalProperties": true }
           },
           "additionalProperties": false
@@ -104,6 +119,23 @@
               "enum": ["function", "class", "interface", "method", "variable", "enum", "type", "component"]
             },
             "isExported": { "type": "boolean" },
+            "isAsync": { "type": "boolean", "description": "Whether the function/method is async" },
+            "returnType": { "type": "string", "description": "Return type of the function/method" },
+            "parameters": {
+              "type": "array",
+              "description": "List of function/method parameters",
+              "items": { "type": "object" }
+            },
+            "decorators": {
+              "type": "array",
+              "description": "List of decorators applied to the symbol",
+              "items": { "type": "string" }
+            },
+            "genericParams": {
+              "type": "array",
+              "description": "Generic type parameters",
+              "items": { "type": "string" }
+            },
             "signature": { "type": "string", "description": "Human-readable signature (params -> returnType)" },
             "visibility": { "type": "string", "enum": ["public", "protected", "private", "package"], "default": "public" },
             "summary": { "type": "string" },

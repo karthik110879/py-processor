@@ -7,6 +7,7 @@ from git import Repo
 from git.exc import GitCommandError
 from github import Github
 from github.GithubException import GithubException
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,8 @@ class PRCreator:
     def _init_github(self) -> None:
         """Initialize GitHub API client."""
         try:
-            github_token = os.getenv('GITHUB_TOKEN')
+            config = Config()
+            github_token = config.github_token
             if not github_token or github_token == 'your_github_token_here':
                 logger.warning("GITHUB_TOKEN not set, PR creation will be limited")
                 return

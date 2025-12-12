@@ -5,6 +5,7 @@ import os
 import uuid
 from typing import Dict, Any, List, Optional
 from langchain_openai import ChatOpenAI
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -20,19 +21,16 @@ class Planner:
     def _init_llm(self) -> None:
         """Initialize LLM for planning."""
         try:
-            api_key = os.getenv("OPENAI_API_KEY")
+            config = Config()
+            api_key = config.openai_api_key
             if not api_key:
                 logger.warning("OPENAI_API_KEY not set, planning will be limited")
                 return
             
-            model = os.getenv("LLM_MODEL", "gpt-4")
-            temperature = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-            max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2000"))
-            
             self.llm = ChatOpenAI(
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                model=config.llm_model,
+                temperature=config.llm_temperature,
+                max_tokens=config.llm_max_tokens,
                 openai_api_key=api_key
             )
         except Exception as e:

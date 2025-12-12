@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Dict, Any, List, Set
 from services.pkg_query_engine import PKGQueryEngine
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -233,10 +234,11 @@ class ImpactAnalyzer:
         Returns:
             True if approval is required
         """
-        # Check environment variable
-        approval_required = os.getenv('AGENT_APPROVAL_REQUIRED', 'true').lower() == 'true'
-        auto_apply_low_risk = os.getenv('AGENT_AUTO_APPLY_LOW_RISK', 'false').lower() == 'true'
-        max_files_auto = int(os.getenv('MAX_IMPACTED_FILES_FOR_AUTO_APPROVAL', '5'))
+        # Check configuration
+        config = Config()
+        approval_required = config.approval_required
+        auto_apply_low_risk = config.auto_apply_low_risk
+        max_files_auto = config.max_impacted_files_auto_approval
         
         # Intent explicitly requires approval
         if intent.get('human_approval', False):
@@ -249,11 +251,7 @@ class ImpactAnalyzer:
         # Check for migrations (high risk)
         constraints = intent.get('constraints', [])
         if any('migration' in c.lower() for c in constraints):
-            require_migration_approval = os.getenv(
-                'REQUIRE_HUMAN_APPROVAL_FOR_MIGRATIONS',
-                'true'
-            ).lower() == 'true'
-            if require_migration_approval:
+            if config.require_migration_approval:
                 return True
         
         # Auto-apply low risk if configured

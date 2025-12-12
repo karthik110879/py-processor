@@ -367,8 +367,12 @@ def extract_definitions(file_path: str, source: Optional[str] = None) -> Optiona
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 source = f.read()
-        except Exception:
-            return None
+        except FileNotFoundError:
+            from code_parser.exceptions import ParseError
+            raise ParseError(f"File not found: {file_path}", file_path=file_path)
+        except (IOError, OSError) as e:
+            from code_parser.exceptions import ParseError
+            raise ParseError(f"Failed to read file: {e}", file_path=file_path)
     
     # Handle languages without tree-sitter support
     if language in ('asp', 'aspx'):

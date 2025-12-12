@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 from langchain_openai import ChatOpenAI
 
 from services.pkg_query_engine import PKGQueryEngine
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -41,21 +42,20 @@ class QueryHandler:
     def _init_llm(self) -> None:
         """Initialize LLM for generating natural language responses."""
         try:
-            api_key = os.getenv("OPENAI_API_KEY")
+            config = Config()
+            api_key = config.openai_api_key
+            
             if not api_key:
-                logger.warning("OPENAI_API_KEY not set, query responses will be limited")
+                logger.warning("OPENAI_API_KEY not set in config, query responses will be limited")
                 return
             
-            model = os.getenv("LLM_MODEL", "gpt-4")
-            temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
-            max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2000"))
-            
             self.llm = ChatOpenAI(
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                model=config.llm_model,
+                temperature=config.llm_temperature,
+                max_tokens=config.llm_max_tokens,
                 openai_api_key=api_key
             )
+            logger.info(f"LLM initialized successfully | Model: {config.llm_model}")
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}", exc_info=True)
             self.llm = None
@@ -563,6 +563,109 @@ Generate a comprehensive, descriptive summary that provides a clear overview of 
         
         return context
     
+    def _build_version_context(self) -> str:
+        """Build context for version-related queries."""
+        project = self.pkg_data.get('project', {})
+        metadata = project.get('metadata', {})
+        
+        context_parts = []
+        
+        # Framework versions
+        framework_versions = metadata.get('frameworkVersions', {})
+        if framework_versions:
+            context_parts.append("Framework Versions:")
+            for framework, info in framework_versions.items():
+                # Prefer exactVersion if available, otherwise use version
+                exact_version = info.get('exactVersion')
+                version = exact_version if exact_version else info.get('version', info.get('versionSpec', 'unknown'))
+                package = info.get('package', '')
+                version_note = " (exact)" if exact_version else ""
+                context_parts.append(f"  - {framework.capitalize()}: {version}{version_note} (package: {package})")
+        
+        # Language/runtime versions
+        if metadata.get('nodeVersion'):
+            context_parts.append(f"\nNode.js Version: {metadata['nodeVersion']}")
+        
+        if metadata.get('pythonVersion'):
+            context_parts.append(f"Python Version: {metadata['pythonVersion']}")
+        
+        if metadata.get('javaVersion'):
+            context_parts.append(f"Java Version: {metadata['javaVersion']}")
+        
+        if metadata.get('typescriptVersion'):
+            context_parts.append(f"TypeScript Version: {metadata['typescriptVersion']}")
+        
+        # Build tool versions
+        build_tool_versions = metadata.get('buildToolVersions', {})
+        if build_tool_versions:
+            context_parts.append("\nBuild Tool Versions:")
+            for tool, version in build_tool_versions.items():
+                context_parts.append(f"  - {tool}: {version}")
+        
+        # Frameworks list (for reference)
+        frameworks = project.get('frameworks', [])
+        if frameworks:
+            context_parts.append(f"\nDetected Frameworks: {', '.join(frameworks)}")
+        
+        return "\n".join(context_parts) if context_parts else "No version information available."
+    
+    def _build_config_context(self) -> str:
+        """Build context for configuration-related queries."""
+        project = self.pkg_data.get('project', {})
+        metadata = project.get('metadata', {})
+        configs = metadata.get('configurations', {})
+        
+        if not configs:
+            return "No configuration file details available."
+        
+        context_parts = []
+        
+        # Angular configuration
+        angular_config = configs.get('angular')
+        if angular_config:
+            context_parts.append("Angular Configuration:")
+            if angular_config.get('version'):
+                context_parts.append(f"  Angular CLI Version: {angular_config['version']}")
+            if angular_config.get('projects'):
+                context_parts.append(f"  Projects: {', '.join(angular_config['projects'])}")
+            if angular_config.get('architect'):
+                context_parts.append(f"  Architect Targets: {', '.join(angular_config['architect'])}")
+        
+        # TypeScript configuration
+        tsconfig = configs.get('typescript')
+        if tsconfig:
+            context_parts.append("\nTypeScript Configuration:")
+            if tsconfig.get('target'):
+                context_parts.append(f"  Target: {tsconfig['target']}")
+            if tsconfig.get('module'):
+                context_parts.append(f"  Module: {tsconfig['module']}")
+            if tsconfig.get('strict'):
+                context_parts.append(f"  Strict Mode: {tsconfig['strict']}")
+        
+        # Python packages
+        python_packages = configs.get('pythonPackages')
+        if python_packages:
+            context_parts.append("\nPython Packages (from requirements.txt):")
+            for pkg in python_packages[:10]:  # Limit to first 10
+                pkg_name = pkg.get('package', '')
+                version = pkg.get('version', '')
+                constraint = pkg.get('constraint', '')
+                if version:
+                    context_parts.append(f"  - {pkg_name} {constraint}{version}")
+                else:
+                    context_parts.append(f"  - {pkg_name}")
+        
+        # Maven configuration
+        maven_config = configs.get('maven')
+        if maven_config:
+            context_parts.append("\nMaven Configuration:")
+            if maven_config.get('javaVersion'):
+                context_parts.append(f"  Java Version: {maven_config['javaVersion']}")
+            if maven_config.get('projectVersion'):
+                context_parts.append(f"  Project Version: {maven_config['projectVersion']}")
+        
+        return "\n".join(context_parts)
+    
     def _build_full_project_context(self) -> str:
         """Build comprehensive project context for general questions."""
         project = self.pkg_data.get('project', {})
@@ -579,6 +682,11 @@ Total Endpoints: {len(endpoints)}
 Total Dependencies: {len([e for e in edges if e.get('type') == 'imports'])}
 Total Features: {len(features)}
 """
+        
+        # Add version information
+        version_context = self._build_version_context()
+        if version_context and version_context != "No version information available.":
+            context += f"\n{version_context}\n"
         
         # Add project summary if available
         if summaries.get('projectSummary'):
@@ -699,6 +807,20 @@ Total Features: {len(features)}
         if any(keyword in question_lower for keyword in ['features', 'feature', 'what features']):
             context += "\n\n" + self._build_features_context()
         
+        # Add version context for version-related questions
+        version_keywords = ['version', 'what version', 'which version', 'v.', 'ver.']
+        if any(keyword in question_lower for keyword in version_keywords):
+            version_context = self._build_version_context()
+            if version_context and version_context != "No version information available.":
+                context += "\n\n=== VERSION INFORMATION ===\n" + version_context
+        
+        # Add config context for configuration-related questions
+        config_keywords = ['config', 'configuration', 'tsconfig', 'angular.json', 'package.json', 'requirements.txt', 'pom.xml']
+        if any(keyword in question_lower for keyword in config_keywords):
+            config_context = self._build_config_context()
+            if config_context and config_context != "No configuration file details available.":
+                context += "\n\n=== CONFIGURATION DETAILS ===\n" + config_context
+        
         prompt = f"""You are a helpful assistant answering questions about a codebase. Use the following comprehensive project information to answer the user's question.
 
 {context}
@@ -709,7 +831,10 @@ Provide a clear, concise, and accurate answer based on the complete project stru
 - If asked about entry files, identify and describe the main entry point files
 - If asked about app components, identify and describe the root/app component files
 - If asked about features, list and describe the feature areas
+- If asked about versions (e.g., "what version of Angular?"), provide the specific version information from the metadata
+- If asked about configurations, provide details from the configuration files
 - Use the module summaries and exports information when relevant
+- The version information section contains framework versions, language versions, and build tool versions
 - If the question cannot be answered from the available information, say so explicitly."""
         
         try:

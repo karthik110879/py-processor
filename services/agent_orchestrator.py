@@ -12,6 +12,7 @@ from flask_socketio import SocketIO
 from services.parser_service import generate_pkg
 import db.neo4j_db as neo4j_db
 from git import Repo
+from utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -763,10 +764,11 @@ class AgentOrchestrator:
                 )
                 
                 # Check if approval required
+                config = Config()
                 requires_approval = (
                     intent.get('human_approval', False) or
                     impact_result.get('requires_approval', False) or
-                    os.getenv('AGENT_APPROVAL_REQUIRED', 'true').lower() == 'true'
+                    config.approval_required
                 )
                 
                 if requires_approval:
