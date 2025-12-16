@@ -1449,43 +1449,176 @@ class DiagramGenerator:
         arch_data = self._collect_architecture_data()
         
         # Build LLM prompt
-        prompt = f"""You are an expert software architect. Analyze the codebase structure and generate a comprehensive Mermaid architecture diagram.
+#         prompt = f"""You are an expert software architect. Analyze the codebase structure and generate a comprehensive Mermaid architecture diagram.
 
-Codebase Summary:
-- Total Modules: {arch_data['total_modules']}
-- Modules by Kind:
-{json.dumps(arch_data['modules_by_kind'], indent=2)}
+# Codebase Summary:
+# - Total Modules: {arch_data['total_modules']}
+# - Modules by Kind:
+# {json.dumps(arch_data['modules_by_kind'], indent=2)}
 
-- Entry Points: {len(arch_data['entry_points'])}
-{json.dumps([ep['path'] for ep in arch_data['entry_points']], indent=2)}
+# - Entry Points: {len(arch_data['entry_points'])}
+# {json.dumps([ep['path'] for ep in arch_data['entry_points']], indent=2)}
 
-- Critical Modules (High Fan-in): {len(arch_data['critical_modules'])}
-{json.dumps([{'path': cm['path'], 'fan_in': cm['fan_in']} for cm in arch_data['critical_modules']], indent=2)}
+# - Critical Modules (High Fan-in): {len(arch_data['critical_modules'])}
+# {json.dumps([{'path': cm['path'], 'fan_in': cm['fan_in']} for cm in arch_data['critical_modules']], indent=2)}
 
-- Dependency Patterns:
-{json.dumps(arch_data['dependency_patterns'], indent=2)}
+# - Dependency Patterns:
+# {json.dumps(arch_data['dependency_patterns'], indent=2)}
 
-- Features: {len(arch_data['features'])}
-{json.dumps([f['name'] for f in arch_data['features']], indent=2)}
+# - Features: {len(arch_data['features'])}
+# {json.dumps([f['name'] for f in arch_data['features']], indent=2)}
 
-User Request: {user_message}
+# User Request: {user_message}
 
-Generate a Mermaid architecture diagram (graph TD format) that shows:
-1. High-level architectural layers (e.g., Controllers, Services, Data Access, Entities, etc.)
-2. Key modules/components in each layer (limit to most important ones)
-3. Relationships and data flow between layers
-4. Entry points and critical modules
-5. Clear, readable structure with proper grouping
+# Generate a Mermaid architecture diagram (graph TD format) that shows:
+# 1. High-level architectural layers (e.g., Controllers, Services, Data Access, Entities, etc.)
+# 2. Key modules/components in each layer (limit to most important ones)
+# 3. Relationships and data flow between layers
+# 4. Entry points and critical modules
+# 5. Clear, readable structure with proper grouping
 
-Requirements:
-- Use Mermaid graph TD syntax
-- Group related modules into subgraphs or layers
-- Use descriptive labels (shorten long paths)
-- Show data flow direction with arrows
-- Keep the diagram readable (limit to ~20-30 key modules)
-- Use appropriate node shapes and styling
+# Requirements:
+# - Use Mermaid graph TD syntax
+# - Group related modules into subgraphs or layers
+# - Use descriptive labels (shorten long paths)
+# - Show data flow direction with arrows
+# - Keep the diagram readable (limit to ~20-30 key modules)
+# - Use appropriate node shapes and styling
 
-Return ONLY the Mermaid code, no explanations or markdown formatting."""
+# Return ONLY the Mermaid code, no explanations or markdown formatting."""
+
+        prompt = f"""
+            You are a senior software architect and architecture-diagram expert.
+
+            Your task is to generate a HIGH-QUALITY ARCHITECTURE DIAGRAM that explains
+            system structure, responsibilities, and dependencies — NOT a file tree.
+
+            ========================
+            CODEBASE INPUT
+            ========================
+            Total Modules: {arch_data['total_modules']}
+
+            Modules by Kind:
+            {json.dumps(arch_data['modules_by_kind'], indent=2)}
+
+            Entry Points:
+            {json.dumps([ep['path'] for ep in arch_data['entry_points']], indent=2)}
+
+            Critical Modules (High Fan-in):
+            {json.dumps(
+                [{'path': cm['path'], 'fan_in': cm['fan_in']} for cm in arch_data['critical_modules']],
+                indent=2
+            )}
+
+            Dependency Patterns:
+            {json.dumps(arch_data['dependency_patterns'], indent=2)}
+
+            Features:
+            {json.dumps([f['name'] for f in arch_data['features']], indent=2)}
+
+            User Request:
+            {user_message}
+
+            ========================
+            PRIMARY OBJECTIVE
+            ========================
+            Generate a CLEAN, READABLE, ACCURATE Mermaid architecture diagram suitable for:
+            - Technical documentation
+            - UI rendering as SVG
+            - Quick architectural understanding (≤ 2 minutes)
+
+            ========================
+            STRICT OUTPUT RULES
+            ========================
+            - Return ONLY valid Mermaid code
+            - DO NOT include explanations, markdown, comments, or prose
+            - Use Mermaid `graph TD` syntax only
+
+            ========================
+            ARCHITECTURE RULES (MANDATORY)
+            ========================
+
+            1. SCOPE RULES
+            - This is an ARCHITECTURE diagram, not a file listing
+            - Show components, responsibilities, and dependencies
+            - EXCLUDE:
+            - index.ts files
+            - DTOs
+            - test files
+            - constants and utilities unless cross-cutting or critical
+
+            2. SIZE & COMPLEXITY LIMITS
+            - Maximum 30 nodes total
+            - Maximum 6 nodes per subgraph
+            - Maximum 4 outgoing edges per node
+            - If limits are exceeded, select ONLY the most architecturally important components
+
+            3. FLOW DIRECTION (HARD RULE)
+            - Diagram flow MUST be strictly TOP → BOTTOM
+            - No mixed or circular layout directions
+
+            4. ARCHITECTURAL LAYERS (TOP → BOTTOM)
+            Each layer MUST be represented as a subgraph:
+            1) Entry Points
+            2) Controllers / API Layer
+            3) Feature Modules
+            4) Services / Domain Logic
+            5) Data / Entities
+
+            Lower layers must NEVER depend on higher layers.
+
+            5. FEATURE BOUNDARIES (CRITICAL)
+            - Group components by BUSINESS FEATURE, not by technical type
+            - Each feature MUST be a nested subgraph
+            - Inside a feature:
+            Controller → Service → Entity
+
+            6. DEPENDENCY SEMANTICS (DO NOT MIX)
+            Use arrows with EXACT meaning:
+            - Controller → Service          : -->
+            - Service → Entity             : -->
+            - Module import / compile-time : -.-> 
+            - Cross-feature dependency     : ==> 
+
+            7. CRITICAL MODULE HANDLING
+            - All critical (high fan-in) modules MUST be included
+            - Critical modules MUST be visually highlighted using:
+            stroke-width: 3px
+            stroke: #e53935
+
+            8. LABELING RULES (ANTI-CLIPPING)
+            - NEVER use full file paths
+            - Use SHORT, DESCRIPTIVE names only
+            - FORCE multi-line labels using '\\n'
+            Example:
+                article\\ncontroller
+                user\\nservice
+                auth\\nmodule
+            - No single label line should exceed 12 characters
+
+            9. VISUAL ENCODING (MEANINGFUL STYLING)
+            Use color strictly by architectural layer:
+            - Entry Points   : light yellow
+            - Controllers    : light blue
+            - Feature Modules: light purple
+            - Services       : light green
+            - Entities       : light orange
+
+            Apply styling using Mermaid classDef and class assignments.
+
+            10. QUALITY GATES (FINAL CHECK)
+            Before producing output, ensure:
+            - No orphan nodes
+            - No circular dependencies
+            - No layer violations
+            - Diagram is readable at 100% zoom
+            - Labels will not be clipped in SVG rendering
+
+            ========================
+            FINAL OUTPUT
+            ========================
+            Return ONLY the Mermaid diagram code.
+            """
         
         try:
             response = self.llm.invoke(prompt)
