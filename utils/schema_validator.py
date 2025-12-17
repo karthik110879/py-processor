@@ -94,6 +94,7 @@ def validate_pkg(pkg_data: Dict[str, Any], schema_path: Optional[str] = None) ->
         errors.extend(_validate_symbol_ids(pkg_data))
         errors.extend(_validate_edges(pkg_data))
         errors.extend(_validate_required_fields(pkg_data))
+        errors.extend(_validate_framework_metadata(pkg_data))
         
         return len(errors) == 0, errors
         
@@ -224,6 +225,46 @@ def _validate_required_fields(pkg_data: Dict[str, Any]) -> List[str]:
             errors.append(f"Endpoint[{i}]: Missing required field 'path'")
         if not endpoint.get("handlerModuleId"):
             errors.append(f"Endpoint[{i}]: Missing required field 'handlerModuleId'")
+    
+    return errors
+
+
+def _validate_framework_metadata(pkg_data: Dict[str, Any]) -> List[str]:
+    """Validate framework-aware metadata fields."""
+    errors = []
+    modules = pkg_data.get("modules", [])
+    
+    # Valid framework names
+    valid_frameworks = [
+        "angular", "react", "vue", "nestjs", "nextjs", "flask", "fastapi",
+        "spring-boot", "aspnet-core", "django", "express"
+    ]
+    
+    for i, module in enumerate(modules):
+        # Validate frameworkConfidence
+        framework_confidence = module.get("frameworkConfidence")
+        if framework_confidence is not None:
+            if not isinstance(framework_confidence, (int, float)):
+                errors.append(f"Module[{i}]: frameworkConfidence must be a number")
+            elif framework_confidence < 0.0 or framework_confidence > 1.0:
+                errors.append(f"Module[{i}]: frameworkConfidence must be between 0.0 and 1.0, got {framework_confidence}")
+        
+        # Validate framework field
+        framework = module.get("framework")
+        if framework is not None and framework not in valid_frameworks:
+            errors.append(f"Module[{i}]: Invalid framework '{framework}' (must be one of {valid_frameworks})")
+        
+        # Validate code snippets
+        code_snippets = module.get("codeSnippets")
+        if code_snippets:
+            if isinstance(code_snippets, dict):
+                for snippet_key, snippet_value in code_snippets.items():
+                    if isinstance(snippet_value, str) and len(snippet_value) > 500:
+                        errors.append(f"Module[{i}]: codeSnippets.{snippet_key} exceeds 500 characters")
+                    elif isinstance(snippet_value, list):
+                        for j, item in enumerate(snippet_value):
+                            if isinstance(item, str) and len(item) > 200:
+                                errors.append(f"Module[{i}]: codeSnippets.{snippet_key}[{j}] exceeds 200 characters")
     
     return errors
 

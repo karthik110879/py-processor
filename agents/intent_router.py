@@ -2,7 +2,8 @@
 
 import logging
 import os
-from typing import Dict, Any, Optional
+import re
+from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from utils.config import Config
@@ -20,6 +21,7 @@ class IntentSchema(BaseModel):
     human_approval: bool = Field(default=True, description="Whether human approval is required")
     constraints: list[str] = Field(default_factory=list, description="Constraints mentioned (e.g., no breaking changes)")
     target_modules: list[str] = Field(default_factory=list, description="Optional hints for target modules (e.g., auth, user)")
+    target_files: list[str] = Field(default_factory=list, description="File paths or filenames mentioned in the request")
 
 
 class IntentRouter:
@@ -49,6 +51,60 @@ class IntentRouter:
             logger.error(f"Failed to initialize LLM: {e}", exc_info=True)
             self.llm = None
     
+    def _extract_file_names(self, user_message: str) -> List[str]:
+        """
+        Extract file names and paths from user message using regex patterns.
+        
+        Args:
+            user_message: User's message
+            
+        Returns:
+            List of extracted file paths/filenames
+        """
+        target_files = []
+        
+        # Patterns to match file references:
+        # - "file X.tsx", "the file X.tsx", "in file X.tsx"
+        # - "in X.tsx", "the X.tsx", "X.tsx file"
+        # - "X.tsx" (standalone, with path separators or extensions)
+        # - Paths like "src/components/X.tsx", "./X.tsx", "../X.tsx"
+        
+        # Pattern 1: "file X" or "the file X" or "in file X"
+        pattern1 = r'(?:the\s+)?(?:file\s+|in\s+file\s+)([^\s]+\.(?:tsx?|jsx?|py|java|cs|cpp|c|h|vue|js|ts|html|css|json|yaml|yml))'
+        matches1 = re.findall(pattern1, user_message, re.IGNORECASE)
+        target_files.extend(matches1)
+        
+        # Pattern 2: "in X.tsx" or "the X.tsx" or "X.tsx file"
+        pattern2 = r'(?:in\s+|the\s+)?([^\s]+\.(?:tsx?|jsx?|py|java|cs|cpp|c|h|vue|js|ts|html|css|json|yaml|yml))(?:\s+file)?'
+        matches2 = re.findall(pattern2, user_message, re.IGNORECASE)
+        target_files.extend(matches2)
+        
+        # Pattern 3: Standalone file paths (with path separators)
+        pattern3 = r'([^\s]*(?:[/\\])[^\s]+\.(?:tsx?|jsx?|py|java|cs|cpp|c|h|vue|js|ts|html|css|json|yaml|yml))'
+        matches3 = re.findall(pattern3, user_message)
+        target_files.extend(matches3)
+        
+        # Pattern 4: Filenames without path (just filename with extension)
+        # This is more permissive, so we'll be careful
+        pattern4 = r'\b([A-Za-z0-9_-]+\.(?:tsx?|jsx?|py|java|cs|cpp|c|h|vue|js|ts|html|css|json|yaml|yml))\b'
+        matches4 = re.findall(pattern4, user_message)
+        target_files.extend(matches4)
+        
+        # Remove duplicates and clean up
+        unique_files = []
+        seen = set()
+        for file in target_files:
+            # Clean up the file path (remove quotes, extra spaces)
+            file_clean = file.strip('"\'`').strip()
+            if file_clean and file_clean.lower() not in seen:
+                seen.add(file_clean.lower())
+                unique_files.append(file_clean)
+        
+        if unique_files:
+            logger.debug(f"Extracted target files from message: {unique_files}")
+        
+        return unique_files
+    
     def extract_intent(self, user_message: str) -> Dict[str, Any]:
         """
         Extract structured intent from user message.
@@ -59,15 +115,29 @@ class IntentRouter:
         Returns:
             Structured intent dictionary
         """
+        # Extract file names first
+        target_files = self._extract_file_names(user_message)
+        
         if not self.llm:
             # Fallback to simple rule-based extraction
-            return self._fallback_extract_intent(user_message)
+            intent = self._fallback_extract_intent(user_message)
+            intent['target_files'] = target_files
+            return intent
         
         try:
-            return self._call_llm(user_message)
+            intent = self._call_llm(user_message)
+            # Merge extracted files (LLM might miss some, so combine)
+            if target_files:
+                existing_files = intent.get('target_files', [])
+                # Combine and deduplicate
+                all_files = list(set(existing_files + target_files))
+                intent['target_files'] = all_files
+            return intent
         except Exception as e:
             logger.error(f"LLM intent extraction failed: {e}", exc_info=True)
-            return self._fallback_extract_intent(user_message)
+            intent = self._fallback_extract_intent(user_message)
+            intent['target_files'] = target_files
+            return intent
     
     def _call_llm(self, user_message: str) -> Dict[str, Any]:
         """
@@ -108,8 +178,10 @@ Return a JSON object with these fields:
 - human_approval: boolean (false for informational/diagram requests)
 - constraints: array of strings
 - target_modules: array of strings
+- target_files: array of strings (file paths or filenames mentioned, e.g., "Login.tsx", "src/components/Button.tsx")
 
-Be specific and accurate. If the intent is unclear, use "code_change" category with "other" intent and provide a detailed description."""
+Be specific and accurate. If the intent is unclear, use "code_change" category with "other" intent and provide a detailed description.
+Extract any file names or paths mentioned in the user's request and include them in target_files."""
 
         try:
             response = self.llm.invoke(prompt)
@@ -210,6 +282,9 @@ Be specific and accurate. If the intent is unclear, use "code_change" category w
         if 'payment' in message_lower:
             target_modules.append('payment')
         
+        # Extract file names
+        target_files = self._extract_file_names(user_message)
+        
         return {
             "intent_category": intent_category,
             "intent": intent_type,
@@ -218,7 +293,8 @@ Be specific and accurate. If the intent is unclear, use "code_change" category w
             "tests_required": tests_required,
             "human_approval": human_approval,
             "constraints": [],
-            "target_modules": target_modules
+            "target_modules": target_modules,
+            "target_files": target_files
         }
     
     def _normalize_intent(self, intent_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -246,7 +322,8 @@ Be specific and accurate. If the intent is unclear, use "code_change" category w
             "tests_required": intent_dict.get("tests_required", []),
             "human_approval": intent_dict.get("human_approval", True),
             "constraints": intent_dict.get("constraints", []),
-            "target_modules": intent_dict.get("target_modules", [])
+            "target_modules": intent_dict.get("target_modules", []),
+            "target_files": intent_dict.get("target_files", [])
         }
         
         # For informational/diagram requests, set appropriate defaults
@@ -277,5 +354,12 @@ Be specific and accurate. If the intent is unclear, use "code_change" category w
         # Ensure target_modules is a list
         if not isinstance(normalized["target_modules"], list):
             normalized["target_modules"] = []
+        
+        # Ensure target_files is a list and validate file paths are strings
+        if not isinstance(normalized["target_files"], list):
+            normalized["target_files"] = []
+        else:
+            # Filter out non-string entries
+            normalized["target_files"] = [f for f in normalized["target_files"] if isinstance(f, str)]
         
         return normalized

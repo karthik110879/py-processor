@@ -7,6 +7,7 @@ from datetime import datetime
 from flask import Flask
 
 from routes.pdf_routes import pdf_bp
+from routes.cleanup_routes import cleanup_bp
 from utils.config import Config
 from utils.logging_config import setup_logging, get_logger
 
@@ -87,6 +88,7 @@ def create_app() -> Flask:
     
     # Register blueprints
     app.register_blueprint(pdf_bp)
+    app.register_blueprint(cleanup_bp, url_prefix='/api/cleanup')
     
     # Initialize SocketIO for WebSocket support
     global socketio

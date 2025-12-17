@@ -42,7 +42,8 @@ class Planner:
         intent: Dict[str, Any],
         impact_result: Dict[str, Any],
         constraints: List[str],
-        pkg_data: Optional[Dict[str, Any]] = None
+        pkg_data: Optional[Dict[str, Any]] = None,
+        repo_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Generate a step-by-step code change plan.
@@ -52,6 +53,7 @@ class Planner:
             impact_result: Impact analysis result
             constraints: List of constraints
             pkg_data: Optional PKG data dictionary for context-aware planning
+            repo_path: Optional repository path for file validation
             
         Returns:
             Plan dictionary with tasks
@@ -60,7 +62,12 @@ class Planner:
             return self._fallback_plan(intent, impact_result, constraints)
         
         try:
-            return self._call_llm(intent, impact_result, constraints, pkg_data)
+            plan = self._call_llm(intent, impact_result, constraints, pkg_data)
+            # Validate files if repo_path provided
+            if repo_path:
+                validation_result = self._validate_files_exist(plan, repo_path, pkg_data)
+                plan['validation'] = validation_result
+            return plan
         except Exception as e:
             logger.error(f"LLM planning failed: {e}", exc_info=True)
             return self._fallback_plan(intent, impact_result, constraints)
@@ -68,6 +75,303 @@ class Planner:
     def _should_exclude_path(self, file_path: str) -> bool:
         """Check if path should be excluded from framework detection."""
         return "cloned_repos" in file_path.replace("\\", "/")
+    
+    def _find_file_by_name(self, filename: str, repo_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Find file by name using fuzzy matching (reused from code_editor logic).
+        
+        Args:
+            filename: Filename to search for
+            repo_path: Repository root path
+            
+        Returns:
+            Dictionary with 'path' (relative path), 'confidence' (0.0-1.0), 'method' (str)
+            or None if no match found
+        """
+        config = Config()
+        if not config.fuzzy_file_matching_enabled:
+            return None
+        
+        filename_lower = filename.lower()
+        filename_no_ext = os.path.splitext(filename_lower)[0]
+        
+        best_match = None
+        best_confidence = 0.0
+        
+        # Recursively search all files in repo
+        for root, dirs, files in os.walk(repo_path):
+            # Skip hidden directories and common ignore patterns
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['node_modules', '__pycache__', '.git']]
+            
+            for file in files:
+                file_lower = file.lower()
+                file_no_ext = os.path.splitext(file_lower)[0]
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, repo_path)
+                
+                confidence = 0.0
+                method = None
+                
+                # Exact filename match (case-insensitive)
+                if file_lower == filename_lower:
+                    confidence = 1.0
+                    method = "exact_filename"
+                # Exact filename without extension match
+                elif file_no_ext == filename_no_ext:
+                    confidence = 0.95
+                    method = "exact_no_ext"
+                # Partial substring match in filename
+                elif filename_lower in file_lower or file_lower in filename_lower:
+                    # Calculate match ratio
+                    longer = max(len(filename_lower), len(file_lower))
+                    shorter = min(len(filename_lower), len(file_lower))
+                    match_ratio = shorter / longer if longer > 0 else 0.0
+                    confidence = 0.7 + (match_ratio * 0.2)  # 0.7-0.9 range
+                    method = "partial_match"
+                # Partial match in filename without extension
+                elif filename_no_ext in file_no_ext or file_no_ext in filename_no_ext:
+                    longer = max(len(filename_no_ext), len(file_no_ext))
+                    shorter = min(len(filename_no_ext), len(file_no_ext))
+                    match_ratio = shorter / longer if longer > 0 else 0.0
+                    confidence = 0.65 + (match_ratio * 0.15)  # 0.65-0.8 range
+                    method = "partial_no_ext"
+                
+                # Update best match if this is better
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_match = {
+                        "path": rel_path.replace('\\', '/'),  # Normalize path separators
+                        "full_path": full_path,
+                        "confidence": confidence,
+                        "method": method
+                    }
+        
+        if best_match and best_confidence >= config.fuzzy_match_confidence_threshold:
+            logger.debug(f"Fuzzy file match found: {filename} -> {best_match['path']} (confidence: {best_confidence:.2f})")
+            return best_match
+        
+        return None
+    
+    def _validate_files_exist(
+        self,
+        plan: Dict[str, Any],
+        repo_path: Optional[str],
+        pkg_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Validate that all files in the plan exist, using fuzzy matching if needed.
+        Also validates framework consistency.
+        
+        Args:
+            plan: Plan dictionary with tasks
+            repo_path: Repository root path
+            pkg_data: Optional PKG data for querying file paths
+            
+        Returns:
+            Validation results dictionary
+        """
+        config = Config()
+        if not config.enable_file_validation:
+            return {"valid": True, "missing_files": [], "found_files": [], "framework_warnings": []}
+        
+        if not repo_path or not os.path.exists(repo_path):
+            logger.warning("Cannot validate files: repo_path not provided or does not exist")
+            return {"valid": False, "missing_files": [], "found_files": [], "framework_warnings": [], "error": "repo_path invalid"}
+        
+        missing_files = []
+        found_files = []
+        framework_warnings = []
+        all_valid = True
+        
+        tasks = plan.get('tasks', [])
+        for task in tasks:
+            files = task.get('files', [])
+            for file_path in files:
+                # Resolve full path
+                full_path = os.path.join(repo_path, file_path)
+                
+                if os.path.exists(full_path):
+                    found_files.append({
+                        "original": file_path,
+                        "resolved": file_path,
+                        "method": "exact"
+                    })
+                    
+                    # Validate framework consistency for existing files
+                    try:
+                        with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        
+                        framework_validation = self._validate_framework_consistency(
+                            file_path, content, pkg_data
+                        )
+                        
+                        if framework_validation.get('warnings'):
+                            framework_warnings.extend([
+                                {
+                                    "file": file_path,
+                                    "warning": w
+                                }
+                                for w in framework_validation.get('warnings', [])
+                            ])
+                    except Exception as e:
+                        logger.debug(f"Failed to validate framework for {file_path}: {e}")
+                else:
+                    # Try fuzzy matching
+                    filename = os.path.basename(file_path)
+                    fuzzy_match = self._find_file_by_name(filename, repo_path)
+                    
+                    if fuzzy_match:
+                        found_files.append({
+                            "original": file_path,
+                            "resolved": fuzzy_match['path'],
+                            "method": "fuzzy",
+                            "confidence": fuzzy_match['confidence']
+                        })
+                        # Update the file path in the task
+                        file_index = files.index(file_path)
+                        files[file_index] = fuzzy_match['path']
+                        logger.info(f"Updated file path in plan: {file_path} -> {fuzzy_match['path']}")
+                    else:
+                        # Try PKG query if available
+                        suggestions = []
+                        if pkg_data:
+                            try:
+                                from services.pkg_query_engine import PKGQueryEngine
+                                query_engine = PKGQueryEngine(pkg_data)
+                                pkg_modules = query_engine.get_modules_by_filename(filename)
+                                if pkg_modules:
+                                    suggestions = [m.get('path', '') for m in pkg_modules[:3]]
+                            except Exception as e:
+                                logger.debug(f"PKG query for file validation failed: {e}")
+                        
+                        missing_files.append({
+                            "file": file_path,
+                            "suggestions": suggestions
+                        })
+                        all_valid = False
+        
+        return {
+            "valid": all_valid,
+            "missing_files": missing_files,
+            "found_files": found_files,
+            "framework_warnings": framework_warnings
+        }
+    
+    def _validate_framework_consistency(
+        self,
+        file_path: str,
+        content: str,
+        pkg_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Validate framework consistency between file content, extension, and PKG data.
+        
+        Args:
+            file_path: Path to the file
+            content: File content string
+            pkg_data: Optional PKG data dictionary
+            
+        Returns:
+            Dictionary with validation results
+        """
+        warnings = []
+        detected_framework = self._detect_framework_from_content(content, file_path)
+        pkg_framework = None
+        
+        # Get PKG framework if available
+        if pkg_data:
+            frameworks = pkg_data.get('project', {}).get('frameworks', [])
+            if frameworks:
+                pkg_framework = frameworks[0].lower()
+        
+        # Validate file extension matches detected framework
+        ext = os.path.splitext(file_path)[1].lower()
+        if detected_framework == 'react' and ext != '.tsx' and ext != '.jsx':
+            if ext == '.ts' or ext == '.js':
+                warnings.append(f"React framework detected but file extension is {ext} (expected .tsx or .jsx)")
+        elif detected_framework == 'angular' and ext == '.tsx':
+            warnings.append(f"Angular framework detected but file extension is .tsx (Angular uses .ts for components)")
+        elif detected_framework == 'vue' and ext != '.vue':
+            warnings.append(f"Vue framework detected but file extension is {ext} (expected .vue)")
+        
+        # Validate imports match framework patterns
+        content_lower = content.lower()
+        if detected_framework == 'angular':
+            if 'from \'react\'' in content_lower or 'from "react"' in content_lower:
+                warnings.append("Angular file contains React imports - framework mismatch")
+        elif detected_framework == 'react':
+            if '@component' in content_lower or '@ngmodule' in content_lower:
+                warnings.append("React file contains Angular decorators - framework mismatch")
+        
+        # Compare PKG framework with detected framework
+        if pkg_framework and detected_framework:
+            if pkg_framework != detected_framework:
+                warnings.append(
+                    f"Framework mismatch: PKG indicates '{pkg_framework}' but file content indicates '{detected_framework}'"
+                )
+        
+        return {
+            "valid": len(warnings) == 0,
+            "detected_framework": detected_framework,
+            "pkg_framework": pkg_framework,
+            "warnings": warnings
+        }
+    
+    def _detect_framework_from_content(self, content: str, file_path: str) -> Optional[str]:
+        """
+        Detect framework from file content (imports, decorators, syntax).
+        
+        Args:
+            content: File content string
+            file_path: Path to the file
+            
+        Returns:
+            Framework name or None
+        """
+        content_lower = content.lower()
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        # Check for Angular patterns
+        if ('@component' in content_lower or 
+            '@ngmodule' in content_lower or 
+            '@angular/core' in content_lower):
+            return 'angular'
+        
+        # Check for React patterns
+        if ('import react' in content_lower or 
+            "from 'react'" in content_lower or
+            'usestate' in content_lower or
+            (ext == '.tsx' and 'return (' in content_lower)):
+            return 'react'
+        
+        # Check for Vue patterns
+        if (ext == '.vue' or
+            'definecomponent' in content_lower or
+            "from 'vue'" in content_lower):
+            return 'vue'
+        
+        # Check for Next.js patterns
+        if ('next/router' in content_lower or
+            'next/link' in content_lower):
+            return 'nextjs'
+        
+        # Check for NestJS patterns
+        if ('@controller' in content_lower or
+            '@injectable' in content_lower or
+            '@nestjs/common' in content_lower):
+            return 'nestjs'
+        
+        # Check for Flask patterns
+        if ('from flask import' in content_lower or
+            '@app.route' in content_lower):
+            return 'flask'
+        
+        # Default based on extension
+        if ext == '.tsx':
+            return 'react'
+        
+        return None
     
     def _analyze_project_structure(self, repo_path: Optional[str], pkg_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """

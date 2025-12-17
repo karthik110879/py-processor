@@ -721,6 +721,25 @@ class AgentOrchestrator:
                     modules = query_engine.get_modules_by_tag(tag)
                     impacted_modules.extend(modules)
                 
+                # Query PKG for target files from intent
+                target_files = intent.get('target_files', [])
+                if target_files:
+                    logger.info(f"Querying PKG for target files: {target_files}")
+                    for target_file in target_files:
+                        # Try to find modules by filename
+                        file_modules = query_engine.get_modules_by_filename(target_file)
+                        if file_modules:
+                            logger.debug(f"Found {len(file_modules)} module(s) for target file: {target_file}")
+                            impacted_modules.extend(file_modules)
+                        else:
+                            # Try with just the filename (without path)
+                            filename = os.path.basename(target_file)
+                            if filename != target_file:
+                                file_modules = query_engine.get_modules_by_filename(filename)
+                                if file_modules:
+                                    logger.debug(f"Found {len(file_modules)} module(s) for filename: {filename}")
+                                    impacted_modules.extend(file_modules)
+                
                 # Get unique modules
                 seen_ids = set()
                 unique_modules = []
@@ -786,10 +805,58 @@ class AgentOrchestrator:
                 planner = Planner()
                 
                 constraints = intent.get('constraints', [])
-                plan = planner.generate_plan(intent, impact_result, constraints, pkg_data)
+                plan = planner.generate_plan(intent, impact_result, constraints, pkg_data, repo_path)
                 
                 plan_id = str(uuid.uuid4())
                 plan['plan_id'] = plan_id
+                
+                # Validate files in plan
+                validation_result = plan.get('validation', {})
+                if validation_result:
+                    missing_files = validation_result.get('missing_files', [])
+                    found_files = validation_result.get('found_files', [])
+                    
+                    if missing_files:
+                        # Stream validation warnings
+                        for missing in missing_files:
+                            suggestions = missing.get('suggestions', [])
+                            suggestion_msg = f"Suggestions: {', '.join(suggestions)}" if suggestions else "No suggestions found"
+                            self._stream_update(
+                                socketio, sid, "warning", "planning",
+                                {
+                                    "message": f"File not found: {missing['file']}. {suggestion_msg}",
+                                    "file": missing['file'],
+                                    "suggestions": suggestions
+                                },
+                                session_id
+                            )
+                    
+                    if found_files:
+                        # Stream files found via fuzzy matching
+                        fuzzy_found = [f for f in found_files if f.get('method') == 'fuzzy']
+                        if fuzzy_found:
+                            for found in fuzzy_found:
+                                self._stream_update(
+                                    socketio, sid, "log", "planning",
+                                    {
+                                        "message": f"File resolved via fuzzy matching: {found['original']} -> {found['resolved']}",
+                                        "original": found['original'],
+                                        "resolved": found['resolved'],
+                                        "confidence": found.get('confidence', 0.0)
+                                    },
+                                    session_id
+                                )
+                    
+                    if not validation_result.get('valid', True):
+                        # Critical files missing - stream error but continue (user can review)
+                        self._stream_update(
+                            socketio, sid, "warning", "planning",
+                            {
+                                "message": f"Plan validation found {len(missing_files)} missing file(s). Review the plan carefully.",
+                                "validation": validation_result
+                            },
+                            session_id
+                        )
                 
                 # Store plan in session
                 if session_id not in self.sessions:
@@ -1000,6 +1067,126 @@ class AgentOrchestrator:
                     },
                     session_id
                 )
+                
+                # Test failure feedback loop: if tests failed, try to fix code and re-test
+                config = Config()
+                max_test_fix_retries = 2
+                test_fix_attempt = 0
+                
+                while (test_results.get('tests_failed', 0) > 0 and 
+                       config.fix_on_test_failure and 
+                       test_fix_attempt < max_test_fix_retries):
+                    
+                    test_fix_attempt += 1
+                    logger.info(f"Tests failed, attempting to fix code... (attempt {test_fix_attempt}/{max_test_fix_retries})")
+                    
+                    self._stream_update(
+                        socketio, sid, "status", "testing",
+                        {"message": f"Tests failed, fixing code... (attempt {test_fix_attempt}/{max_test_fix_retries})"},
+                        session_id
+                    )
+                    
+                    # Extract test failure messages
+                    test_output = test_results.get('test_output', '')
+                    failure_messages = test_output
+                    
+                    # Limit failure messages to avoid overly long prompts
+                    if len(failure_messages) > 2000:
+                        failure_messages = failure_messages[:2000] + "... (truncated)"
+                    
+                    # Get list of files that were edited
+                    edited_files = edit_result.get('changes', [])
+                    
+                    if not edited_files:
+                        logger.warning("No edited files found, cannot fix test failures")
+                        break
+                    
+                    # Re-edit each file with test failure context
+                    from agents.code_editor import CodeEditExecutor
+                    editor = CodeEditExecutor(repo_path)
+                    
+                    files_fixed = 0
+                    for change in edited_files:
+                        file_path = change.get('file')
+                        if not file_path:
+                            continue
+                        
+                        # Build full path
+                        full_file_path = os.path.join(repo_path, file_path)
+                        if not os.path.exists(full_file_path):
+                            logger.warning(f"File not found for test fix: {full_file_path}")
+                            continue
+                        
+                        # Read current content
+                        try:
+                            with open(full_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                current_content = f.read()
+                        except Exception as e:
+                            logger.warning(f"Failed to read file for test fix: {e}")
+                            continue
+                        
+                        # Build error context for iterative fix
+                        errors_dict = {
+                            'validation_errors': [],
+                            'lint_errors': [],
+                            'test_failures': failure_messages
+                        }
+                        
+                        # Get original change descriptions from plan
+                        change_descriptions = []
+                        for task in plan.get('tasks', []):
+                            if file_path in task.get('files', []):
+                                change_descriptions = task.get('changes', [])
+                                break
+                        
+                        # Add test failure context to change descriptions
+                        enhanced_changes = list(change_descriptions)
+                        enhanced_changes.insert(0, f"Tests failed: {failure_messages}. Fix the code to make tests pass.")
+                        
+                        # Use iterative fix method
+                        try:
+                            fixed_content = editor._fix_code_iteratively(
+                                full_file_path,
+                                current_content,
+                                errors_dict,
+                                enhanced_changes,
+                                task={},  # Empty task dict for test fixes
+                                pkg_data=pkg_data,
+                                max_retries=1  # Single fix attempt per test iteration
+                            )
+                            
+                            if fixed_content and fixed_content != current_content:
+                                # Write fixed content
+                                with open(full_file_path, 'w', encoding='utf-8') as f:
+                                    f.write(fixed_content)
+                                files_fixed += 1
+                                logger.info(f"Fixed code for {file_path} based on test failures")
+                        except Exception as e:
+                            logger.warning(f"Failed to fix code for {file_path}: {e}", exc_info=True)
+                    
+                    if files_fixed > 0:
+                        logger.info(f"Fixed {files_fixed} file(s), re-testing...")
+                        self._stream_update(
+                            socketio, sid, "status", "testing",
+                            {"message": f"Re-testing after fixing {files_fixed} file(s)..."},
+                            session_id
+                        )
+                        
+                        # Re-run tests
+                        test_results = test_runner.run_tests()
+                        
+                        self._stream_update(
+                            socketio, sid, "test_result", "testing",
+                            {
+                                "results": test_results,
+                                "message": f"Re-test completed: {test_results.get('tests_passed', 0)} passed, {test_results.get('tests_failed', 0)} failed"
+                            },
+                            session_id
+                        )
+                    else:
+                        logger.warning("No files were fixed, stopping test fix loop")
+                        break
+                
             except Exception as e:
                 logger.error(f"Test execution failed: {e}", exc_info=True)
                 self._stream_update(

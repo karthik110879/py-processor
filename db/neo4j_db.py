@@ -1057,6 +1057,237 @@ def migrate_existing_pkgs() -> int:
         return 0
 
 
+def _delete_project_tx(tx: Transaction, project_id: str) -> Dict[str, Any]:
+    """
+    Transaction function to delete all project-related data from Neo4j.
+    
+    Args:
+        tx: Neo4j transaction
+        project_id: Project ID to delete
+        
+    Returns:
+        Dictionary with deletion counts
+    """
+    deletion_counts = {
+        "packages": 0,
+        "modules": 0,
+        "symbols": 0,
+        "endpoints": 0,
+        "features": 0,
+        "metadata": 0,
+        "relationships": 0
+    }
+    
+    # Check if project exists
+    result = tx.run("MATCH (proj:Project {id: $project_id}) RETURN proj", {"project_id": project_id})
+    if not result.single():
+        return deletion_counts
+    
+    # Count and delete relationships first (to avoid constraint violations)
+    # Delete Project -> entity relationships
+    result = tx.run("""
+        MATCH (proj:Project {id: $project_id})-[r:HAS_MODULE|HAS_SYMBOL|HAS_ENDPOINT|HAS_FEATURE|HAS_METADATA]->()
+        WITH count(r) AS rel_count
+        MATCH (proj:Project {id: $project_id})-[r:HAS_MODULE|HAS_SYMBOL|HAS_ENDPOINT|HAS_FEATURE|HAS_METADATA]->()
+        DELETE r
+        RETURN rel_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["relationships"] += record["rel_count"] or 0
+    
+    # Delete relationships between project entities (IMPORTS, CALLS, etc.)
+    result = tx.run("""
+        MATCH (proj:Project {id: $project_id})
+        MATCH (proj)-[:HAS_MODULE|HAS_SYMBOL]->(a)
+        MATCH (a)-[r]->(b)
+        WHERE (b:Module OR b:Symbol)
+        WITH count(r) AS rel_count
+        MATCH (proj:Project {id: $project_id})
+        MATCH (proj)-[:HAS_MODULE|HAS_SYMBOL]->(a)
+        MATCH (a)-[r]->(b)
+        WHERE (b:Module OR b:Symbol)
+        DELETE r
+        RETURN rel_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["relationships"] += record["rel_count"] or 0
+    
+    # Delete Feature-Module relationships (CONTAINS)
+    result = tx.run("""
+        MATCH (proj:Project {id: $project_id})-[:HAS_FEATURE]->(f:Feature)
+        MATCH (f)-[r:CONTAINS]->()
+        WITH count(r) AS rel_count
+        MATCH (proj:Project {id: $project_id})-[:HAS_FEATURE]->(f:Feature)
+        MATCH (f)-[r:CONTAINS]->()
+        DELETE r
+        RETURN rel_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["relationships"] += record["rel_count"] or 0
+    
+    # Delete Package version relationships (VERSION_OF)
+    result = tx.run("""
+        MATCH (pkg:Package {projectId: $project_id})-[r:VERSION_OF]->()
+        WITH count(r) AS rel_count
+        MATCH (pkg:Package {projectId: $project_id})-[r:VERSION_OF]->()
+        DELETE r
+        RETURN rel_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["relationships"] += record["rel_count"] or 0
+    
+    # Delete Package nodes
+    result = tx.run("""
+        MATCH (pkg:Package {projectId: $project_id})
+        WITH count(pkg) AS pkg_count
+        MATCH (pkg:Package {projectId: $project_id})
+        DELETE pkg
+        RETURN pkg_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["packages"] = record["pkg_count"] or 0
+    
+    # Delete Module nodes
+    result = tx.run("""
+        MATCH (proj:Project {id: $project_id})-[:HAS_MODULE]->(m:Module)
+        WITH count(m) AS mod_count
+        MATCH (proj:Project {id: $project_id})-[:HAS_MODULE]->(m:Module)
+        DELETE m
+        RETURN mod_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["modules"] = record["mod_count"] or 0
+    
+    # Delete Symbol nodes
+    result = tx.run("""
+        MATCH (proj:Project {id: $project_id})-[:HAS_SYMBOL]->(s:Symbol)
+        WITH count(s) AS sym_count
+        MATCH (proj:Project {id: $project_id})-[:HAS_SYMBOL]->(s:Symbol)
+        DELETE s
+        RETURN sym_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["symbols"] = record["sym_count"] or 0
+    
+    # Delete Endpoint nodes
+    result = tx.run("""
+        MATCH (proj:Project {id: $project_id})-[:HAS_ENDPOINT]->(e:Endpoint)
+        WITH count(e) AS end_count
+        MATCH (proj:Project {id: $project_id})-[:HAS_ENDPOINT]->(e:Endpoint)
+        DELETE e
+        RETURN end_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["endpoints"] = record["end_count"] or 0
+    
+    # Delete Feature nodes
+    result = tx.run("""
+        MATCH (proj:Project {id: $project_id})-[:HAS_FEATURE]->(f:Feature)
+        WITH count(f) AS feat_count
+        MATCH (proj:Project {id: $project_id})-[:HAS_FEATURE]->(f:Feature)
+        DELETE f
+        RETURN feat_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["features"] = record["feat_count"] or 0
+    
+    # Delete Metadata node
+    result = tx.run("""
+        MATCH (m:Metadata {projectId: $project_id})
+        WITH count(m) AS meta_count
+        MATCH (m:Metadata {projectId: $project_id})
+        DELETE m
+        RETURN meta_count
+    """, {"project_id": project_id})
+    record = result.single()
+    if record:
+        deletion_counts["metadata"] = record["meta_count"] or 0
+    
+    # Finally, delete Project node
+    tx.run("MATCH (proj:Project {id: $project_id}) DELETE proj", {"project_id": project_id})
+    
+    return deletion_counts
+
+
+def delete_project(project_id: str) -> Dict[str, Any]:
+    """
+    Delete all project-related data from Neo4j.
+    
+    Deletes:
+    - All Package nodes with projectId = project_id
+    - Project node with id = project_id
+    - All Module nodes connected to the project
+    - All Symbol nodes connected to the project
+    - All Endpoint nodes connected to the project
+    - All Feature nodes connected to the project
+    - Metadata node with projectId = project_id
+    - All relationships (HAS_MODULE, HAS_SYMBOL, HAS_ENDPOINT, HAS_FEATURE, HAS_METADATA, imports, calls, etc.)
+    
+    Args:
+        project_id: Project ID to delete
+        
+    Returns:
+        Dictionary with deletion summary: {"deleted": {...}, "success": true}
+    """
+    logger.info(f"🗑️  DELETING PROJECT FROM NEO4J | Project ID: {project_id}")
+    
+    if not verify_connection():
+        logger.error(f"❌ NEO4J CONNECTION UNAVAILABLE | Project ID: {project_id} | Cannot delete project")
+        return {
+            "deleted": {},
+            "success": False,
+            "error": "Neo4j connection unavailable"
+        }
+    
+    try:
+        with get_session() as session:
+            deletion_counts = session.execute_write(_delete_project_tx, project_id)
+            
+            # Check if anything was deleted
+            total_deleted = sum(deletion_counts.values())
+            if total_deleted == 0:
+                logger.warning(f"⚠️  PROJECT NOT FOUND IN NEO4J | Project ID: {project_id}")
+                return {
+                    "deleted": deletion_counts,
+                    "success": False,
+                    "error": "Project not found in Neo4j"
+                }
+            
+            logger.info(f"✅ PROJECT DELETED FROM NEO4J | Project ID: {project_id} | Packages: {deletion_counts['packages']} | Modules: {deletion_counts['modules']} | Symbols: {deletion_counts['symbols']} | Endpoints: {deletion_counts['endpoints']} | Features: {deletion_counts['features']} | Metadata: {deletion_counts['metadata']} | Relationships: {deletion_counts['relationships']}")
+            
+            return {
+                "deleted": deletion_counts,
+                "success": True
+            }
+            
+    except ConnectionError as e:
+        logger.error(f"❌ NEO4J CONNECTION ERROR | Project ID: {project_id} | Error: {e}")
+        return {
+            "deleted": {},
+            "success": False,
+            "error": f"Neo4j connection error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(
+            f"❌ DELETE PROJECT ERROR | Project ID: {project_id} | Error: {e}",
+            exc_info=True
+        )
+        return {
+            "deleted": {},
+            "success": False,
+            "error": f"Error deleting project: {str(e)}"
+        }
+
+
 # Initialize driver on module import
 if uri and user and password:
     driver = _initialize_driver()

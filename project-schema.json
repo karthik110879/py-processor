@@ -43,6 +43,49 @@
             "type": "object",
             "additionalProperties": true,
             "description": "Optional project-level metadata (package managers, build system, etc.)"
+          },
+          "frameworkConfig": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Framework-specific configuration"
+          },
+          "codeStyle": {
+            "type": "object",
+            "properties": {
+              "namingConvention": { "type": "string", "enum": ["camelCase", "PascalCase", "snake_case"] },
+              "importStyle": { "type": "string", "enum": ["absolute", "relative", "mixed"] },
+              "quoteStyle": { "type": "string", "enum": ["single", "double"] },
+              "indentation": { "type": "number" },
+              "semicolons": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          },
+          "uiPatterns": {
+            "type": "object",
+            "properties": {
+              "buttonComponent": { "type": ["string", "null"] },
+              "navigationPattern": { "type": ["string", "null"] },
+              "routingConfig": { "type": ["string", "null"] },
+              "commonImports": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          },
+          "navigationPatterns": {
+            "type": "object",
+            "properties": {
+              "backButtonPatterns": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "pattern": { "type": "string" },
+                    "frequency": { "type": "number" }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false
@@ -99,6 +142,50 @@
               "items": { "type": "string" }
             },
             "moduleSummary": { "type": ["string", "null"], "description": "Optional summary of the module" },
+            "framework": { "type": ["string", "null"], "description": "Detected framework for this module" },
+            "frameworkConfidence": { "type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Confidence score for framework detection (0.0-1.0)" },
+            "codePatterns": {
+              "type": "object",
+              "properties": {
+                "importStyle": { "type": "string", "enum": ["absolute", "relative", "mixed"] },
+                "exportStyle": { "type": "string", "enum": ["named", "default", "mixed"] },
+                "decorators": { "type": "array", "items": { "type": "string" } },
+                "componentType": { "type": ["string", "null"], "enum": ["class", "function", "arrow", null] },
+                "lifecycleHooks": { "type": "array", "items": { "type": "string" } },
+                "stateManagement": { "type": "string", "enum": ["none", "rxjs", "redux", "mobx"] }
+              },
+              "additionalProperties": false
+            },
+            "codeSnippets": {
+              "type": "object",
+              "properties": {
+                "imports": { "type": "string", "maxLength": 500 },
+                "componentDecorator": { "type": "string", "maxLength": 500 },
+                "classSignature": { "type": "string", "maxLength": 500 },
+                "commonMethods": { "type": "array", "items": { "type": "string", "maxLength": 200 } }
+              },
+              "additionalProperties": false
+            },
+            "uiElements": {
+              "type": "object",
+              "properties": {
+                "buttons": { "type": "array", "items": { "type": "object" } },
+                "navigation": { "type": "object" },
+                "forms": { "type": "array", "items": { "type": "object" } }
+              },
+              "additionalProperties": false
+            },
+            "fileStructure": {
+              "type": "object",
+              "properties": {
+                "hasTemplate": { "type": "boolean" },
+                "templatePath": { "type": ["string", "null"] },
+                "hasStyles": { "type": "boolean" },
+                "stylesPath": { "type": ["string", "null"] },
+                "isStandalone": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            },
             "metadata": { "type": "object", "additionalProperties": true }
           },
           "additionalProperties": false
@@ -197,6 +284,14 @@
           }
         },
         "additionalProperties": false
+      },
+      "frameworkPatterns": {
+        "type": "object",
+        "description": "Framework-specific code patterns extracted from actual codebase",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
       }
     },
     "additionalProperties": false

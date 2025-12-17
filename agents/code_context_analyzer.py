@@ -1,6 +1,7 @@
 """Code Context Analyzer - Deep PKG analysis for code generation."""
 
 import logging
+import os
 from typing import Dict, Any, List, Set, Optional
 from services.pkg_query_engine import PKGQueryEngine
 
@@ -374,19 +375,51 @@ class CodeContextAnalyzer:
         
         context["related_modules"] = related_modules[:10]  # Limit to 10
         
-        # Find similar modules (same kind)
+        # Find similar modules with prioritization:
+        # 1. Same directory first
+        # 2. Same framework second
+        # 3. Same file type third
         module_kinds = module.get('kind', [])
+        module_path = module.get('path', '')
+        module_dir = os.path.dirname(module_path) if module_path else ''
+        module_ext = os.path.splitext(module_path)[1] if module_path else ''
+        module_framework = patterns.get("framework_type")
+        
         similar_modules = []
         for mod in self.modules:
             if mod['id'] == target_module_id:
                 continue
             
             mod_kinds = mod.get('kind', [])
-            # Check if they share any kind
+            mod_path = mod.get('path', '')
+            mod_dir = os.path.dirname(mod_path) if mod_path else ''
+            mod_ext = os.path.splitext(mod_path)[1] if mod_path else ''
+            
+            # Extract framework from module
+            mod_patterns = self.extract_code_patterns(mod['id'])
+            mod_framework = mod_patterns.get('framework_type')
+            
+            # Calculate similarity score
+            score = 0
+            # Same directory gets highest priority
+            if module_dir and mod_dir and module_dir == mod_dir:
+                score += 100
+            # Same framework gets second priority
+            if module_framework and mod_framework and module_framework == mod_framework:
+                score += 50
+            # Same file type gets third priority
+            if module_ext and mod_ext and module_ext == mod_ext:
+                score += 25
+            # Shared kind gets bonus
             if any(k in mod_kinds for k in module_kinds if k):
-                similar_modules.append(mod)
+                score += 10
+            
+            if score > 0:
+                similar_modules.append((score, mod))
         
-        context["similar_modules"] = similar_modules[:5]  # Limit to 5
+        # Sort by score (highest first) and take top 5
+        similar_modules.sort(key=lambda x: x[0], reverse=True)
+        context["similar_modules"] = [mod for _, mod in similar_modules[:5]]
         
         # Get symbols in target module
         module_symbols = [s for s in self.symbols if s.get('moduleId') == target_module_id]

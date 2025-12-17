@@ -341,6 +341,161 @@ class PKGGenerator:
         
         return kinds if kinds else []
     
+    def _extract_code_snippets(self, file_path: str, source: str) -> Dict[str, Any]:
+        """
+        Extract code snippets for LLM context from a file.
+        
+        Extracts:
+        - Imports (first 20 lines)
+        - Component decorator if present
+        - Class/function signature
+        - Common methods (first 5)
+        
+        Each snippet is limited to 200 characters.
+        
+        Args:
+            file_path: Path to the file
+            source: Source code string
+            
+        Returns:
+            Dictionary with code snippets
+        """
+        snippets: Dict[str, Any] = {
+            "imports": "",
+            "componentDecorator": "",
+            "classSignature": "",
+            "commonMethods": []
+        }
+        
+        if not source:
+            return snippets
+        
+        lines = source.split('\n')
+        
+        # Extract imports (first 20 lines)
+        import_lines = []
+        for i, line in enumerate(lines[:20]):
+            line_stripped = line.strip()
+            if line_stripped.startswith('import ') or line_stripped.startswith('from '):
+                import_lines.append(line)
+        
+        imports_text = '\n'.join(import_lines)
+        if len(imports_text) > 200:
+            snippets["imports"] = imports_text[:197] + "..."
+        else:
+            snippets["imports"] = imports_text
+        
+        # Parse AST to extract decorator and class signature
+        from code_parser.multi_parser import parse_source, detect_language
+        from code_parser.normalizer import get_text
+        
+        language = detect_language(file_path)
+        if language:
+            root = parse_source(source, language)
+            if root:
+                def walk(node):
+                    yield node
+                    for child in node.children:
+                        yield from walk(child)
+                
+                # Extract component decorator
+                for node in walk(root):
+                    if node.type == "decorator":
+                        decorator_text = get_text(node, source)
+                        if decorator_text:
+                            decorator_lower = decorator_text.lower()
+                            if '@component' in decorator_lower or '@ngmodule' in decorator_lower:
+                                if len(decorator_text) > 200:
+                                    snippets["componentDecorator"] = decorator_text[:197] + "..."
+                                else:
+                                    snippets["componentDecorator"] = decorator_text
+                                break
+                
+                # Extract class/function signature
+                for node in walk(root):
+                    if node.type == "class_declaration":
+                        class_name_node = node.child_by_field_name("name")
+                        if class_name_node:
+                            class_name = get_text(class_name_node, source)
+                            # Get modifiers (export, etc.)
+                            modifiers = []
+                            for child in node.children:
+                                if child.type in ("export", "abstract", "public", "private", "protected"):
+                                    modifiers.append(get_text(child, source))
+                            
+                            # Get implements/extends
+                            implements_node = node.child_by_field_name("superclass")
+                            extends_text = ""
+                            if implements_node:
+                                extends_text = f" extends {get_text(implements_node, source)}"
+                            
+                            signature = f"{' '.join(modifiers)} class {class_name}{extends_text}"
+                            if len(signature) > 200:
+                                snippets["classSignature"] = signature[:197] + "..."
+                            else:
+                                snippets["classSignature"] = signature
+                            break
+                    
+                    elif node.type == "function_declaration":
+                        func_name_node = node.child_by_field_name("name")
+                        if func_name_node:
+                            func_name = get_text(func_name_node, source)
+                            params_node = node.child_by_field_name("parameters")
+                            params = get_text(params_node, source) if params_node else "()"
+                            
+                            # Check for export
+                            is_exported = any(child.type == "export" for child in node.children)
+                            signature = f"{'export ' if is_exported else ''}function {func_name}{params}"
+                            if len(signature) > 200:
+                                snippets["classSignature"] = signature[:197] + "..."
+                            else:
+                                snippets["classSignature"] = signature
+                            break
+                
+                # Extract first 5 method signatures
+                method_count = 0
+                for node in walk(root):
+                    if method_count >= 5:
+                        break
+                    
+                    if node.type == "method_definition":
+                        method_name_node = node.child_by_field_name("name")
+                        if method_name_node:
+                            method_name = get_text(method_name_node, source)
+                            params_node = node.child_by_field_name("parameters")
+                            params = get_text(params_node, source) if params_node else "()"
+                            
+                            # Try to get return type
+                            return_type = ""
+                            for child in node.children:
+                                if child.type in ("type_annotation", "return_type"):
+                                    return_type_text = get_text(child, source)
+                                    if return_type_text:
+                                        return_type = f": {return_type_text}"
+                                        break
+                            
+                            method_sig = f"{method_name}{params}{return_type}"
+                            if len(method_sig) > 200:
+                                method_sig = method_sig[:197] + "..."
+                            snippets["commonMethods"].append(method_sig)
+                            method_count += 1
+                    
+                    elif node.type == "function_declaration" and method_count < 5:
+                        # Include standalone functions as methods
+                        func_name_node = node.child_by_field_name("name")
+                        if func_name_node:
+                            func_name = get_text(func_name_node, source)
+                            params_node = node.child_by_field_name("parameters")
+                            params = get_text(params_node, source) if params_node else "()"
+                            
+                            method_sig = f"{func_name}{params}"
+                            if len(method_sig) > 200:
+                                method_sig = method_sig[:197] + "..."
+                            snippets["commonMethods"].append(method_sig)
+                            method_count += 1
+        
+        return snippets
+    
     def _build_modules(self) -> List[Dict[str, Any]]:
         """Build modules array from parsed files."""
         modules = []
@@ -381,6 +536,47 @@ class PKGGenerator:
                 if "imports" in definitions:
                     raw_imports = definitions["imports"]
                 
+                # Read source for framework detection and other extractions
+                try:
+                    source = self._read_file_with_retry(file_path)
+                except Exception:
+                    source = ""
+                
+                # Detect module-level framework
+                from code_parser.multi_parser import detect_module_framework
+                framework, framework_confidence = detect_module_framework(file_path, source)
+                
+                # Extract code snippets
+                code_snippets = self._extract_code_snippets(file_path, source)
+                
+                # Extract UI patterns (for template files)
+                from code_parser.multi_parser import extract_ui_patterns
+                ext = os.path.splitext(file_path)[1].lower()
+                ui_elements = {}
+                if ext in ('.html', '.tsx', '.jsx', '.vue'):
+                    ui_elements = extract_ui_patterns(file_path, source)
+                else:
+                    # Check for associated template file
+                    file_dir = os.path.dirname(file_path)
+                    file_base = os.path.splitext(os.path.basename(file_path))[0]
+                    template_extensions = ['.html', '.tsx', '.jsx']
+                    for template_ext in template_extensions:
+                        template_path = os.path.join(file_dir, f"{file_base}{template_ext}")
+                        if os.path.exists(template_path):
+                            try:
+                                template_source = self._read_file_with_retry(template_path)
+                                ui_elements = extract_ui_patterns(template_path, template_source)
+                            except Exception:
+                                pass
+                            break
+                
+                # Analyze file structure
+                from code_parser.multi_parser import analyze_file_structure
+                file_structure = analyze_file_structure(file_path, source)
+                
+                # Get code patterns from definitions (already extracted)
+                code_patterns = definitions.get("codePatterns", {})
+                
                 # Build module object
                 module = {
                     "id": module_id,
@@ -392,7 +588,13 @@ class PKGGenerator:
                     "imports": [],  # Will be resolved to module IDs in relationship extraction
                     "definitions": definitions,  # Store for later processing
                     "file_path": file_path,  # Store for endpoint extraction
-                    "raw_imports": raw_imports  # Store raw imports for resolution
+                    "raw_imports": raw_imports,  # Store raw imports for resolution
+                    "framework": framework,
+                    "frameworkConfidence": framework_confidence,
+                    "codePatterns": code_patterns,
+                    "codeSnippets": code_snippets,
+                    "uiElements": ui_elements,
+                    "fileStructure": file_structure
                 }
                 
                 modules.append(module)
@@ -597,6 +799,146 @@ class PKGGenerator:
         
         return endpoints
     
+    def _build_framework_patterns_library(self, modules: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Build framework patterns library by extracting templates from actual codebase files.
+        
+        Analyzes actual files in the codebase to extract component templates, service templates,
+        routing patterns, and button patterns for each detected framework.
+        
+        Args:
+            modules: List of module dictionaries
+            
+        Returns:
+            Dictionary with framework patterns organized by framework name
+        """
+        framework_patterns: Dict[str, Any] = {}
+        
+        if not self.frameworks:
+            return framework_patterns
+        
+        # Group modules by framework
+        modules_by_framework: Dict[str, List[Dict[str, Any]]] = {}
+        for module in modules:
+            framework = module.get("framework")
+            if framework:
+                if framework not in modules_by_framework:
+                    modules_by_framework[framework] = []
+                modules_by_framework[framework].append(module)
+        
+        # Extract patterns for each framework
+        for framework in self.frameworks:
+            framework_modules = modules_by_framework.get(framework, [])
+            if not framework_modules:
+                continue
+            
+            patterns: Dict[str, str] = {}
+            
+            # Find component files
+            component_files = [m for m in framework_modules if "component" in m.get("kind", [])]
+            if component_files:
+                # Extract component template from first component
+                component_file = component_files[0]
+                file_path = component_file.get("file_path")
+                if file_path and os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            # Extract class/component definition (first 50 lines or until closing brace)
+                            lines = content.split('\n')
+                            component_lines = []
+                            brace_count = 0
+                            in_component = False
+                            
+                            for line in lines[:100]:  # Limit to first 100 lines
+                                if '@component' in line.lower() or '@component' in line.lower():
+                                    in_component = True
+                                if in_component:
+                                    component_lines.append(line)
+                                    brace_count += line.count('{') - line.count('}')
+                                    if brace_count <= 0 and len(component_lines) > 5:
+                                        break
+                            
+                            if component_lines:
+                                component_template = '\n'.join(component_lines)
+                                if len(component_template) > 500:
+                                    component_template = component_template[:497] + "..."
+                                patterns["componentTemplate"] = component_template
+                    except Exception:
+                        pass
+            
+            # Find service files
+            service_files = [m for m in framework_modules if "service" in m.get("kind", [])]
+            if service_files:
+                service_file = service_files[0]
+                file_path = service_file.get("file_path")
+                if file_path and os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            # Extract service class definition
+                            lines = content.split('\n')
+                            service_lines = []
+                            brace_count = 0
+                            in_service = False
+                            
+                            for line in lines[:80]:
+                                if '@injectable' in line.lower() or 'service' in line.lower():
+                                    in_service = True
+                                if in_service:
+                                    service_lines.append(line)
+                                    brace_count += line.count('{') - line.count('}')
+                                    if brace_count <= 0 and len(service_lines) > 3:
+                                        break
+                            
+                            if service_lines:
+                                service_template = '\n'.join(service_lines)
+                                if len(service_template) > 500:
+                                    service_template = service_template[:497] + "..."
+                                patterns["serviceTemplate"] = service_template
+                    except Exception:
+                        pass
+            
+            # Find routing files
+            routing_files = [
+                f for f in collect_files(self.repo_path)
+                if 'routing' in f.lower() or 'router' in f.lower() or 'route' in f.lower()
+            ]
+            if routing_files:
+                routing_file = routing_files[0]
+                try:
+                    with open(routing_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        # Extract routing pattern (routes array or Route components)
+                        if framework == 'angular':
+                            routes_match = re.search(r'const\s+routes:\s*Routes\s*=\s*\[[^\]]+\]', content, re.DOTALL)
+                            if routes_match:
+                                routes_text = routes_match.group(0)
+                                if len(routes_text) > 500:
+                                    routes_text = routes_text[:497] + "..."
+                                patterns["routingPattern"] = routes_text
+                        elif framework == 'react':
+                            route_match = re.search(r'<Route[^>]*path[^>]*>', content)
+                            if route_match:
+                                route_text = route_match.group(0)
+                                patterns["routingPattern"] = route_text
+                except Exception:
+                    pass
+            
+            # Extract button pattern from UI elements
+            for module in framework_modules[:5]:  # Check first 5 modules
+                ui_elements = module.get("uiElements", {})
+                buttons = ui_elements.get("buttons", [])
+                if buttons:
+                    button = buttons[0]
+                    patterns["buttonPattern"] = button.get("pattern", "")
+                    break
+            
+            if patterns:
+                framework_patterns[framework] = patterns
+        
+        return framework_patterns
+    
     def _build_features(self, modules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Build features array from folder hierarchy."""
         if not self.include_features:
@@ -703,6 +1045,18 @@ class PKGGenerator:
             self.features = []
             log_with_context(logger, logging.INFO, "Skipping features | include_features=False", repo_path=self.repo_path)
         
+        # Build framework patterns library
+        log_with_context(logger, logging.INFO, "Building framework patterns library", repo_path=self.repo_path)
+        framework_patterns = self._build_framework_patterns_library(self.modules)
+        log_with_context(logger, logging.INFO, "Framework patterns built", repo_path=self.repo_path, count=len(framework_patterns))
+        
+        # Extract project-level UI patterns and code style
+        log_with_context(logger, logging.INFO, "Extracting project-level UI patterns and code style", repo_path=self.repo_path)
+        from code_parser.project_metadata import extract_project_ui_patterns, extract_code_style
+        
+        project_ui_patterns = extract_project_ui_patterns(self.modules, self.repo_path)
+        code_style = extract_code_style(self.repo_path)
+        
         # Clean up module definitions (remove file_path, keep only needed fields)
         log_with_context(logger, logging.DEBUG, "Cleaning up module data", repo_path=self.repo_path)
         for module in self.modules:
@@ -714,23 +1068,36 @@ class PKGGenerator:
         
         # Build final PKG
         log_with_context(logger, logging.INFO, "Building final PKG structure", repo_path=self.repo_path)
+        
+        # Merge project metadata with new fields
+        project_data = {
+            "id": project_meta.get("id", ""),
+            "name": project_meta.get("name", ""),
+            "rootPath": project_meta.get("rootPath", ""),
+            "languages": project_meta.get("languages", []),
+            "frameworks": project_meta.get("frameworks", []),
+            "metadata": project_meta.get("metadata", {}),
+            "codeStyle": code_style
+        }
+        
+        # Add UI patterns if available
+        if project_ui_patterns:
+            project_data.update(project_ui_patterns)
+        
         pkg = {
             "version": "1.0.0",
             "generatedAt": datetime.utcnow().isoformat() + "Z",
             "gitSha": project_meta.get("gitSha"),
-            "project": {
-                "id": project_meta.get("id", ""),
-                "name": project_meta.get("name", ""),
-                "rootPath": project_meta.get("rootPath", ""),
-                "languages": project_meta.get("languages", []),
-                "frameworks": project_meta.get("frameworks", []),
-                "metadata": project_meta.get("metadata", {})
-            },
+            "project": project_data,
             "modules": self.modules,
             "symbols": self.symbols,
             "endpoints": self.endpoints,
             "edges": self.edges,
         }
+        
+        # Add framework patterns if available
+        if framework_patterns:
+            pkg["frameworkPatterns"] = framework_patterns
         
         if self.features:
             pkg["features"] = self.features

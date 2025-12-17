@@ -109,6 +109,21 @@ class Config:
         # Security Configuration
         self._max_impacted_files_auto_approval = int(os.getenv("MAX_IMPACTED_FILES_FOR_AUTO_APPROVAL", "5"))
         self._require_migration_approval = os.getenv("REQUIRE_HUMAN_APPROVAL_FOR_MIGRATIONS", "true").lower() == "true"
+        
+        # File Matching Configuration
+        self._fuzzy_file_matching_enabled = os.getenv("FUZZY_FILE_MATCHING_ENABLED", "true").lower() == "true"
+        self._fuzzy_match_confidence_threshold = float(os.getenv("FUZZY_MATCH_CONFIDENCE_THRESHOLD", "0.8"))
+        self._enable_file_validation = os.getenv("ENABLE_FILE_VALIDATION", "true").lower() == "true"
+        self._log_llm_prompts = os.getenv("LOG_LLM_PROMPTS", "false").lower() == "true"
+        
+        # AST Editing Configuration
+        self._use_ast_editing = os.getenv("USE_AST_EDITING", "true").lower() == "true"
+        
+        # Iterative Fix Configuration
+        self._max_fix_retries = int(os.getenv("MAX_FIX_RETRIES", "3"))
+        self._auto_fix_lint = os.getenv("AUTO_FIX_LINT", "true").lower() == "true"
+        self._include_code_examples = os.getenv("INCLUDE_CODE_EXAMPLES", "true").lower() == "true"
+        self._fix_on_test_failure = os.getenv("FIX_ON_TEST_FAILURE", "true").lower() == "true"
     
     def _load_from_file(self) -> None:
         """Load configuration from config.yaml or config.json as fallback."""
@@ -220,6 +235,18 @@ class Config:
                 self._max_impacted_files_auto_approval = security.get("max_impacted_files", self._max_impacted_files_auto_approval)
             if not os.getenv("REQUIRE_HUMAN_APPROVAL_FOR_MIGRATIONS"):
                 self._require_migration_approval = security.get("require_migration_approval", self._require_migration_approval)
+        
+        # Iterative Fix
+        if "iterative_fix" in config_data:
+            iterative_fix = config_data["iterative_fix"]
+            if not os.getenv("MAX_FIX_RETRIES"):
+                self._max_fix_retries = iterative_fix.get("max_retries", self._max_fix_retries)
+            if not os.getenv("AUTO_FIX_LINT"):
+                self._auto_fix_lint = iterative_fix.get("auto_fix_lint", self._auto_fix_lint)
+            if not os.getenv("INCLUDE_CODE_EXAMPLES"):
+                self._include_code_examples = iterative_fix.get("include_code_examples", self._include_code_examples)
+            if not os.getenv("FIX_ON_TEST_FAILURE"):
+                self._fix_on_test_failure = iterative_fix.get("fix_on_test_failure", self._fix_on_test_failure)
     
     def _validate(self) -> None:
         """Validate configuration values."""
@@ -248,6 +275,9 @@ class Config:
         
         if self._port <= 0 or self._port > 65535:
             errors.append("PORT must be between 1 and 65535")
+        
+        if self._max_fix_retries < 0:
+            errors.append("MAX_FIX_RETRIES must be non-negative")
         
         # Validate log level
         valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -473,4 +503,51 @@ class Config:
     def require_migration_approval(self) -> bool:
         """Whether to require approval for migrations."""
         return self._require_migration_approval
+    
+    # File Matching Properties
+    @property
+    def fuzzy_file_matching_enabled(self) -> bool:
+        """Whether fuzzy file matching is enabled."""
+        return self._fuzzy_file_matching_enabled
+    
+    @property
+    def fuzzy_match_confidence_threshold(self) -> float:
+        """Confidence threshold for fuzzy file matching (0.0-1.0)."""
+        return self._fuzzy_match_confidence_threshold
+    
+    @property
+    def enable_file_validation(self) -> bool:
+        """Whether file validation is enabled."""
+        return self._enable_file_validation
+    
+    @property
+    def log_llm_prompts(self) -> bool:
+        """Whether to log LLM prompts (for debugging)."""
+        return self._log_llm_prompts
+    
+    @property
+    def use_ast_editing(self) -> bool:
+        """Whether AST-aware editing is enabled (default: True)."""
+        return self._use_ast_editing
+    
+    # Iterative Fix Properties
+    @property
+    def max_fix_retries(self) -> int:
+        """Maximum retries for iterative code fixing (default: 3)."""
+        return self._max_fix_retries
+    
+    @property
+    def auto_fix_lint(self) -> bool:
+        """Whether to use auto-fix tools (eslint --fix, prettier) when available (default: True)."""
+        return self._auto_fix_lint
+    
+    @property
+    def include_code_examples(self) -> bool:
+        """Whether to include actual code examples from PKG in LLM prompts (default: True)."""
+        return self._include_code_examples
+    
+    @property
+    def fix_on_test_failure(self) -> bool:
+        """Whether to automatically fix code when tests fail (default: True)."""
+        return self._fix_on_test_failure
 

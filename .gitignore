@@ -52,3 +52,6 @@ Thumbs.db
 *.tmp
 /tmp/
 
+# Node.js
+node_modules/
+
