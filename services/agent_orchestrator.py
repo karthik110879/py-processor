@@ -914,6 +914,121 @@ class AgentOrchestrator:
                 session_id
             )
     
+    def _generate_spec_file(
+        self,
+        plan: Dict[str, Any],
+        repo_path: str,
+        session_id: str,
+        socketio: SocketIO,
+        sid: str
+    ) -> str:
+        """
+        Generate a markdown specification file from the plan.
+        
+        Args:
+            plan: Generated plan dictionary
+            repo_path: Path to repository
+            session_id: Session identifier
+            socketio: SocketIO instance
+            sid: Socket session ID
+            
+        Returns:
+            Path to generated spec file
+        """
+        try:
+            self._stream_update(
+                socketio, sid, "status", "spec_generation",
+                {"message": "Generating specification file..."},
+                session_id
+            )
+            
+            # Create specs directory if it doesn't exist
+            specs_dir = os.path.join(repo_path, "specs")
+            os.makedirs(specs_dir, exist_ok=True)
+            
+            # Generate spec file path
+            plan_id = plan.get('plan_id', 'unknown')
+            spec_file_path = os.path.join(specs_dir, f"plan_{plan_id}.md")
+            
+            # Extract plan data
+            intent = plan.get('intent', {})
+            impact_summary = plan.get('impact_summary', {})
+            tasks = plan.get('tasks', [])
+            migration_required = plan.get('migration_required', False)
+            total_estimated_time = plan.get('total_estimated_time', 'Unknown')
+            
+            # Build markdown content
+            lines = []
+            lines.append("# Code Change Plan Specification\n")
+            lines.append(f"**Plan ID:** {plan_id}\n")
+            lines.append(f"**Intent:** {intent.get('description', 'N/A')}\n")
+            lines.append(f"**Risk Level:** {impact_summary.get('risk_score', 'unknown')}\n")
+            lines.append(f"**Estimated Time:** {total_estimated_time}\n")
+            lines.append("\n## Impact Summary\n")
+            lines.append(f"- Files Affected: {impact_summary.get('file_count', 0)}")
+            lines.append(f"- Modules Affected: {impact_summary.get('module_count', 0)}")
+            
+            # Count test files from tasks
+            test_count = 0
+            for task in tasks:
+                test_count += len(task.get('tests', []))
+            lines.append(f"- Tests Affected: {test_count}\n")
+            
+            lines.append("## Tasks\n")
+            
+            # Add each task
+            for i, task in enumerate(tasks, 1):
+                lines.append(f"### Task {i}: {task.get('task', 'N/A')}\n")
+                lines.append(f"**Files:** {', '.join(task.get('files', []))}\n")
+                lines.append("**Changes:**")
+                for change in task.get('changes', []):
+                    lines.append(f"- {change}")
+                lines.append(f"\n**Tests:** {', '.join(task.get('tests', []))}")
+                notes = task.get('notes', '')
+                if notes:
+                    lines.append(f"\n**Notes:** {notes}")
+                lines.append("\n")
+            
+            # Add migration requirements if any
+            if migration_required:
+                lines.append("## Migration Requirements\n")
+                lines.append("This plan requires database migrations. Please review and execute migration scripts before deploying.\n")
+            
+            # Write spec file
+            with open(spec_file_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+            
+            # Stream success message
+            self._stream_update(
+                socketio, sid, "status", "spec_generation",
+                {"message": f"Spec file generated: {spec_file_path}", "spec_file_path": spec_file_path},
+                session_id
+            )
+            
+            # Emit notification to MCP namespace
+            try:
+                socketio.emit('spec_file_generated', {
+                    'plan_id': plan_id,
+                    'spec_file_path': os.path.abspath(spec_file_path),  # Use absolute path
+                    'intent': intent.get('description', ''),
+                    'timestamp': datetime.utcnow().isoformat()
+                }, namespace='/mcp')
+                logger.info(f"Spec file notification sent to MCP namespace: {spec_file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to emit spec file notification to MCP: {e}", exc_info=True)
+                # Don't fail the entire operation if MCP notification fails
+            
+            return spec_file_path
+            
+        except Exception as e:
+            logger.error(f"Error generating spec file: {e}", exc_info=True)
+            self._stream_update(
+                socketio, sid, "error", "spec_generation",
+                {"message": f"Failed to generate spec file: {str(e)}"},
+                session_id
+            )
+            raise
+    
     def _execute_plan(
         self,
         plan: Dict[str, Any],
@@ -921,7 +1036,8 @@ class AgentOrchestrator:
         session_id: str,
         socketio: SocketIO,
         sid: str,
-        pkg_data: Optional[Dict[str, Any]] = None
+        pkg_data: Optional[Dict[str, Any]] = None,
+        code_edits: Optional[bool] = None
     ) -> None:
         """
         Execute the approved plan.
@@ -933,11 +1049,22 @@ class AgentOrchestrator:
             socketio: SocketIO instance
             sid: Socket session ID
             pkg_data: Optional PKG data dictionary for context-aware editing
+            code_edits: Optional flag to enable/disable code edits. If None, uses config default.
         """
         # Retrieve pkg_data from session if not provided
         if pkg_data is None:
             session = self.sessions.get(session_id, {})
             pkg_data = session.get('pkg_data')
+        
+        # Get default from config if not provided
+        if code_edits is None:
+            config = Config()
+            code_edits = config.code_edits_enabled
+        
+        # If code_edits is False, generate spec file instead of executing
+        if not code_edits:
+            spec_file_path = self._generate_spec_file(plan, repo_path, session_id, socketio, sid)
+            return
         
         try:
             # Phase 4: Code Editing
@@ -1484,7 +1611,8 @@ class AgentOrchestrator:
         session_id: str,
         plan_id: str,
         socketio: SocketIO,
-        sid: str
+        sid: str,
+        code_edits: Optional[bool] = None
     ) -> None:
         """
         Approve a pending plan and continue execution.
@@ -1494,8 +1622,14 @@ class AgentOrchestrator:
             plan_id: Plan ID to approve
             socketio: SocketIO instance
             sid: Socket session ID
+            code_edits: Optional flag to enable/disable code edits. If None, uses config default.
         """
         try:
+            # Get default from config if not provided
+            if code_edits is None:
+                config = Config()
+                code_edits = config.code_edits_enabled
+            
             session = self.sessions.get(session_id)
             if not session:
                 self._stream_update(
@@ -1536,7 +1670,7 @@ class AgentOrchestrator:
             pkg_data = session.get('pkg_data')
             
             # Execute plan
-            self._execute_plan(plan, repo_path, session_id, socketio, sid, pkg_data)
+            self._execute_plan(plan, repo_path, session_id, socketio, sid, pkg_data, code_edits=code_edits)
         
         except Exception as e:
             logger.error(f"Error approving plan: {e}", exc_info=True)

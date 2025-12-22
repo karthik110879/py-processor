@@ -124,6 +124,9 @@ class Config:
         self._auto_fix_lint = os.getenv("AUTO_FIX_LINT", "true").lower() == "true"
         self._include_code_examples = os.getenv("INCLUDE_CODE_EXAMPLES", "true").lower() == "true"
         self._fix_on_test_failure = os.getenv("FIX_ON_TEST_FAILURE", "true").lower() == "true"
+        
+        # Code Edits Configuration
+        self._code_edits_enabled = os.getenv("CODE_EDITS_ENABLED", "false").lower() == "true"
     
     def _load_from_file(self) -> None:
         """Load configuration from config.yaml or config.json as fallback."""
@@ -550,4 +553,9 @@ class Config:
     def fix_on_test_failure(self) -> bool:
         """Whether to automatically fix code when tests fail (default: True)."""
         return self._fix_on_test_failure
+    
+    @property
+    def code_edits_enabled(self) -> bool:
+        """Whether code edits are enabled (default: False). When False, generates spec files instead."""
+        return self._code_edits_enabled
 

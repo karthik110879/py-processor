@@ -214,12 +214,14 @@ def register_chat_events(socketio):
         Expected payload:
         {
             "session_id": "session-uuid",
-            "plan_id": "plan-uuid" (optional)
+            "plan_id": "plan-uuid" (optional),
+            "codeEdits": true/false (optional)
         }
         """
         try:
             session_id = data.get('session_id')
             plan_id = data.get('plan_id')
+            code_edits = data.get('codeEdits')
             
             if not session_id:
                 emit('error', {
@@ -229,7 +231,7 @@ def register_chat_events(socketio):
                 })
                 return
             
-            logger.info(f"Plan approval received - Session: {session_id}, Plan: {plan_id}")
+            logger.info(f"Plan approval received - Session: {session_id}, Plan: {plan_id}, CodeEdits: {code_edits}")
             
             emit('agent_update', {
                 'type': 'status',
@@ -245,7 +247,7 @@ def register_chat_events(socketio):
             try:
                 from services.agent_orchestrator import AgentOrchestrator
                 orchestrator = AgentOrchestrator()
-                orchestrator.approve_plan(session_id, plan_id, socketio, request.sid)
+                orchestrator.approve_plan(session_id, plan_id, socketio, request.sid, code_edits=code_edits)
             except Exception as e:
                 logger.error(f"Error approving plan: {e}", exc_info=True)
                 emit('error', {
@@ -272,13 +274,15 @@ def register_chat_events(socketio):
         {
             "session_id": "session-uuid",
             "plan_id": "plan-uuid" (optional),
-            "approved": true/false
+            "approved": true/false,
+            "codeEdits": true/false (optional)
         }
         """
         try:
             session_id = data.get('session_id')
             plan_id = data.get('plan_id')
             approved = data.get('approved')
+            code_edits = data.get('codeEdits')
             
             if not session_id:
                 emit('error', {
@@ -296,7 +300,7 @@ def register_chat_events(socketio):
                 })
                 return
             
-            logger.info(f"Approval response received - Session: {session_id}, Plan: {plan_id}, Approved: {approved}")
+            logger.info(f"Approval response received - Session: {session_id}, Plan: {plan_id}, Approved: {approved}, CodeEdits: {code_edits}")
             
             if approved:
                 # Route to approval handler
@@ -314,7 +318,7 @@ def register_chat_events(socketio):
                 try:
                     from services.agent_orchestrator import AgentOrchestrator
                     orchestrator = AgentOrchestrator()
-                    orchestrator.approve_plan(session_id, plan_id, socketio, request.sid)
+                    orchestrator.approve_plan(session_id, plan_id, socketio, request.sid, code_edits=code_edits)
                 except Exception as e:
                     logger.error(f"Error approving plan: {e}", exc_info=True)
                     emit('error', {

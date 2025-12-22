@@ -128,6 +128,16 @@ def create_app() -> Flask:
             logger.warning("Chat routes not available - WebSocket will not function properly")
         except Exception as e:
             logger.error(f"Failed to register chat routes: {e}", exc_info=True)
+        
+        # Register MCP routes
+        try:
+            from routes.mcp_routes import register_mcp_events
+            register_mcp_events(socketio)
+            logger.info("MCP routes registered successfully")
+        except ImportError as e:
+            logger.error(f"Failed to import MCP routes: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Failed to register MCP routes: {e}", exc_info=True)
     else:
         socketio = None
         logger.warning("SocketIO not available, WebSocket features disabled")
