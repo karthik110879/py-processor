@@ -254,6 +254,26 @@
           "additionalProperties": false
         }
       },
+      "documents": {
+        "type": "array",
+        "description": "Documents discovered in the repository with Claude analysis",
+        "items": {
+          "type": "object",
+          "required": ["id", "filename", "type"],
+          "properties": {
+            "id": { "type": "string", "description": "Document ID (format: doc:{relative_path})" },
+            "filename": { "type": "string", "description": "Original filename" },
+            "path": { "type": "string", "description": "Relative path from repo root" },
+            "type": { "type": "string", "enum": ["requirements", "cost", "enhancement", "design", "test", "other"], "description": "Document category" },
+            "summary": { "type": "string", "description": "Claude-generated summary" },
+            "key_points": { "type": "array", "items": { "type": "string" }, "description": "Key points/requirements" },
+            "linkedModuleIds": { "type": "array", "items": { "type": "string" }, "description": "Linked PKG module IDs" },
+            "metadata": { "type": "object", "additionalProperties": true, "description": "Document metadata" },
+            "chunkIds": { "type": "array", "items": { "type": "string" }, "description": "Chunk IDs from document processing" }
+          },
+          "additionalProperties": false
+        }
+      },
       "edges": {
         "type": "array",
         "description": "Graph edges between IDs (moduleId or symbolId). Use compact edge list.",

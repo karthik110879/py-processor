@@ -739,7 +739,7 @@ class PKGGenerator:
                             method_symbol["isAsync"] = True
                         if method_decorators:
                             method_symbol["decorators"] = method_decorators
-                        if method.get("parameters_list") and isinstance(method, dict):
+                        if isinstance(method, dict) and method.get("parameters_list"):
                             method_symbol["parameters"] = method.get("parameters_list")
                         if method_return_type:
                             method_symbol["returnType"] = method_return_type

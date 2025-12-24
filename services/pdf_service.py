@@ -413,6 +413,23 @@ class PDFService:
                 "chunks": chunks if chunks else None
             }
 
+            # ➜ CLAUDE ANALYSIS
+            if content:
+                try:
+                    from services.claude_document_analyzer import ClaudeDocumentAnalyzer
+                    analyzer = ClaudeDocumentAnalyzer()
+                    doc_filename = filename or os.path.basename(file_path)
+                    analysis = analyzer.analyze_document(
+                        document_content=content,
+                        filename=doc_filename
+                    )
+                    result_data["claude_analysis"] = analysis
+                    logger.info(f"Added Claude analysis to document: {doc_filename}")
+                except ImportError:
+                    logger.debug("ClaudeDocumentAnalyzer not available, skipping analysis")
+                except Exception as e:
+                    logger.warning(f"Failed to analyze document with Claude: {str(e)}")
+
             # ➜ STORE CHUNKS IN QDRANT DB
             if content and AGENTS_AVAILABLE:
                 try:

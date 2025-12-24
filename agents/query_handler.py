@@ -666,6 +666,50 @@ Generate a comprehensive, descriptive summary that provides a clear overview of 
         
         return "\n".join(context_parts)
     
+    def _build_document_context(self, documents: List[Dict[str, Any]], limit: int = 5) -> str:
+        """
+        Build context string from documents.
+        
+        Args:
+            documents: List of document dictionaries
+            limit: Maximum number of documents to include
+            
+        Returns:
+            Formatted document context string
+        """
+        if not documents:
+            return ""
+        
+        # Limit to top documents (prioritize by type relevance)
+        prioritized_docs = sorted(
+            documents,
+            key=lambda d: (
+                0 if d.get("type") in ["requirements", "design"] else 1,
+                -len(d.get("key_points", []))
+            )
+        )[:limit]
+        
+        context_parts = []
+        context_parts.append(f"Documents ({len(documents)} total, showing top {len(prioritized_docs)}):")
+        
+        for doc in prioritized_docs:
+            filename = doc.get("filename", "Unknown")
+            doc_type = doc.get("type", "other")
+            summary = doc.get("summary", "")
+            key_points = doc.get("key_points", [])
+            
+            context_parts.append(f"\n- {filename} ({doc_type})")
+            if summary:
+                context_parts.append(f"  Summary: {summary}")
+            if key_points:
+                context_parts.append(f"  Key Points:")
+                for point in key_points[:5]:  # Limit to 5 key points per document
+                    context_parts.append(f"    - {point}")
+                if len(key_points) > 5:
+                    context_parts.append(f"    ... and {len(key_points) - 5} more")
+        
+        return "\n".join(context_parts)
+    
     def _build_full_project_context(self) -> str:
         """Build comprehensive project context for general questions."""
         project = self.pkg_data.get('project', {})
@@ -821,6 +865,13 @@ Total Features: {len(features)}
             if config_context and config_context != "No configuration file details available.":
                 context += "\n\n=== CONFIGURATION DETAILS ===\n" + config_context
         
+        # Add document context
+        documents = self.pkg_data.get("documents", [])
+        if documents:
+            document_context = self._build_document_context(documents)
+            if document_context:
+                context += "\n\n=== DOCUMENTS ===\n" + document_context
+        
         prompt = f"""You are a helpful assistant answering questions about a codebase. Use the following comprehensive project information to answer the user's question.
 
 {context}
@@ -833,8 +884,10 @@ Provide a clear, concise, and accurate answer based on the complete project stru
 - If asked about features, list and describe the feature areas
 - If asked about versions (e.g., "what version of Angular?"), provide the specific version information from the metadata
 - If asked about configurations, provide details from the configuration files
+- If asked about documents, requirements, or specifications, reference the Documents section
 - Use the module summaries and exports information when relevant
 - The version information section contains framework versions, language versions, and build tool versions
+- The Documents section contains analyzed documents with summaries and key points
 - If the question cannot be answered from the available information, say so explicitly."""
         
         try:

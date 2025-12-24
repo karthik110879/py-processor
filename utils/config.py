@@ -95,6 +95,12 @@ class Config:
         self._llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
         self._llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2000"))
         
+        # Claude Configuration
+        self._anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        self._claude_model = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
+        self._claude_temperature = float(os.getenv("CLAUDE_TEMPERATURE", "0.7"))
+        self._claude_max_tokens = int(os.getenv("CLAUDE_MAX_TOKENS", "4096"))
+        
         # Git/GitHub Configuration
         self._git_user_name = os.getenv("GIT_USER_NAME", "")
         self._git_user_email = os.getenv("GIT_USER_EMAIL", "")
@@ -458,6 +464,27 @@ class Config:
     def llm_max_tokens(self) -> int:
         """Maximum tokens for LLM responses (default: 2000)."""
         return self._llm_max_tokens
+    
+    # Claude Properties
+    @property
+    def anthropic_api_key(self) -> str:
+        """Anthropic API key for Claude operations."""
+        return self._anthropic_api_key
+    
+    @property
+    def claude_model(self) -> str:
+        """Claude model name (default: claude-3-5-sonnet-20241022)."""
+        return self._claude_model
+    
+    @property
+    def claude_temperature(self) -> float:
+        """Claude temperature (default: 0.7)."""
+        return self._claude_temperature
+    
+    @property
+    def claude_max_tokens(self) -> int:
+        """Maximum tokens for Claude responses (default: 4096)."""
+        return self._claude_max_tokens
     
     # Git/GitHub Properties
     @property

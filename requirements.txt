@@ -10,6 +10,7 @@ langchain>=1.0.8
 langchain-core>=1.1.0
 langchain-text-splitters>=1.0.0
 langchain-openai>=1.0.3
+anthropic>=0.34.0
 
 tree-sitter>=0.20.0
 tree-sitter-python>=0.20.0

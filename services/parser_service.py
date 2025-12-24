@@ -72,7 +72,8 @@ def generate_pkg(
     output_path: Optional[str] = None,
     fan_threshold: Optional[int] = None,
     include_features: Optional[bool] = None,
-    use_cache: Optional[bool] = None
+    use_cache: Optional[bool] = None,
+    use_claude: Optional[bool] = None
 ) -> Dict[str, Any]:
     """
     Generate Project Knowledge Graph (PKG) JSON following project-schema.json.
@@ -86,6 +87,7 @@ def generate_pkg(
         fan_threshold: Fan-in threshold for filtering detailed symbol info (defaults to config)
         include_features: Whether to include feature groupings (defaults to config)
         use_cache: Whether to use cached PKG if available and valid (defaults to config)
+        use_claude: Whether to use Claude for semantic enhancements (defaults to USE_CLAUDE_PKG env var)
         
     Returns:
         Complete PKG dictionary
@@ -100,6 +102,8 @@ def generate_pkg(
         include_features = config.include_features
     if use_cache is None:
         use_cache = config.cache_enabled
+    if use_claude is None:
+        use_claude = os.getenv("USE_CLAUDE_PKG", "false").lower() == "true"
     
     # Determine output path - default to repo_path/pkg.json if not specified
     if output_path is None:
@@ -133,12 +137,30 @@ def generate_pkg(
             logger.warning(f"⚠️  CACHE READ ERROR | Repo: {repo_path} | Error: {e} | Regenerating...")
     
     # Generate new PKG
-    logger.info(f"🏗️  GENERATING PKG | Repo: {repo_path} | Fan threshold: {fan_threshold} | Include features: {include_features}")
-    generator = PKGGenerator(
-        repo_path=repo_path,
-        fan_threshold=fan_threshold,
-        include_features=include_features
-    )
+    logger.info(f"🏗️  GENERATING PKG | Repo: {repo_path} | Fan threshold: {fan_threshold} | Include features: {include_features} | Use Claude: {use_claude}")
+    
+    # Select generator class based on use_claude flag
+    if use_claude:
+        try:
+            from services.claude_pkg_generator import ClaudePKGGenerator
+            generator = ClaudePKGGenerator(
+                repo_path=repo_path,
+                fan_threshold=fan_threshold,
+                include_features=include_features
+            )
+        except ImportError as e:
+            logger.warning(f"⚠️  Failed to import ClaudePKGGenerator: {e} | Falling back to PKGGenerator")
+            generator = PKGGenerator(
+                repo_path=repo_path,
+                fan_threshold=fan_threshold,
+                include_features=include_features
+            )
+    else:
+        generator = PKGGenerator(
+            repo_path=repo_path,
+            fan_threshold=fan_threshold,
+            include_features=include_features
+        )
     
     pkg = generator.generate_pkg(output_path=output_path)
     logger.info(f"✅ PKG GENERATED | Repo: {repo_path} | Saved to: {output_path} | Modules: {len(pkg.get('modules', []))} | Symbols: {len(pkg.get('symbols', []))} | Edges: {len(pkg.get('edges', []))}")
