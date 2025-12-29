@@ -1,6 +1,7 @@
 """Main Flask application for PDF processor microservice."""
 
 import logging
+import os
 import socket
 import sys
 from datetime import datetime
@@ -230,7 +231,7 @@ def main() -> None:
     
     # Get configuration
     host = config.host
-    port = config.port
+    port = int(os.getenv("PORT", config.port))
     debug = config.debug
     allow_port_fallback = True  # Default behavior
     
