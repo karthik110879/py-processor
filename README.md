@@ -193,13 +193,18 @@ Autonomous code change agents that can understand natural language requests, ana
 5. **Code Editor** (`agents/code_editor.py`)
    - Applies code changes from plan
    - Creates git branches
-   - Executes file edits
+   - Executes file edits (AST-aware or text-based)
+   - Iterative code fixing with error feedback
+   - Code validation and linting
    - Generates diffs
+   - Supports fuzzy file matching
 
 6. **Test Runner** (`agents/test_runner.py`)
    - Runs unit, integration, and e2e tests
-   - Supports multiple test frameworks
+   - Supports multiple test frameworks (pytest, jest, unittest, etc.)
    - Optional Docker-based test execution
+   - Test failure feedback loop with automatic code fixing
+   - Test result parsing and reporting
 
 7. **Verifier** (`agents/verifier.py`)
    - Verifies changes meet acceptance criteria
@@ -207,9 +212,12 @@ Autonomous code change agents that can understand natural language requests, ana
    - Determines if changes are ready for PR
 
 8. **PR Creator** (`agents/pr_creator.py`)
-   - Creates git commits
-   - Opens pull requests on GitHub
+   - Automatically forks repositories if needed
+   - Creates git commits with descriptive messages
+   - Pushes branches to forked repository
+   - Opens pull requests on GitHub (to original repo)
    - Generates PR descriptions with change summary
+   - Configures git remotes (origin=fork, upstream=original)
 
 **Agent Workflow:**
 ```
@@ -282,6 +290,15 @@ User Request
 
 WebSocket-based bidirectional communication for interactive agent collaboration.
 
+**Additional Capabilities:**
+- **Auto-Forking**: Automatically forks repositories not owned by authenticated user
+- **Spec File Generation**: When `CODE_EDITS_ENABLED=false`, generates markdown specification files instead of editing code
+- **Iterative Code Fixing**: Automatically fixes code based on linting errors and test failures
+- **Fuzzy File Matching**: Resolves file paths with confidence scoring when exact matches not found
+- **AST-Aware Editing**: Uses Abstract Syntax Trees for safer code transformations
+- **Test Failure Feedback Loop**: Automatically fixes code when tests fail and re-runs tests
+- **MCP Integration**: Model Context Protocol support for spec file notifications
+
 **WebSocket Events:**
 
 **Client → Server:**
@@ -299,8 +316,16 @@ WebSocket-based bidirectional communication for interactive agent collaboration.
 
 **Session Management:**
 - Automatic session creation on connection
-- Session persistence for repo_url, pkg_data, current_plan
+- Session persistence for:
+  - `repo_url` (original and forked)
+  - `repo_path` (local repository path)
+  - `pkg_data` (cached PKG JSON)
+  - `current_intent` (extracted intent)
+  - `current_plan` (generated plan)
+  - `pending_approval` (plan_id awaiting approval)
+  - `fork_info` (fork operation details)
 - Session cleanup on disconnect
+- Session lookup by socket ID (SID)
 
 **Real-time Streaming:**
 - Live status updates during agent operations
@@ -308,6 +333,10 @@ WebSocket-based bidirectional communication for interactive agent collaboration.
 - Test results streamed as they complete
 - Query responses with references
 - Diagram generation progress
+- Validation results (errors, warnings)
+- File resolution notifications (fuzzy matching)
+- Approval requests with plan details
+- Spec file generation notifications (MCP namespace)
 
 ## Installation & Setup
 
@@ -316,7 +345,7 @@ WebSocket-based bidirectional communication for interactive agent collaboration.
 - Python 3.10+
 - Git (for repository cloning)
 - Neo4j 4.x+ (optional, for graph database features)
-- Node.js & npm (optional, for mermaid-cli diagram rendering)
+- Node.js & npm (optional, for mermaid-cli diagram rendering and ts-morph)
 - Playwright (optional, for diagram image rendering)
 
 ### Installation Steps
@@ -343,7 +372,12 @@ WebSocket-based bidirectional communication for interactive agent collaboration.
    pip install -r requirements.txt
    ```
 
-4. **Install optional dependencies:**
+4. **Install Node.js dependencies (optional, for TypeScript parsing):**
+   ```bash
+   npm install
+   ```
+
+5. **Install optional dependencies:**
 
    **For diagram rendering (Playwright):**
    ```bash
@@ -356,11 +390,65 @@ WebSocket-based bidirectional communication for interactive agent collaboration.
    npm install -g @mermaid-js/mermaid-cli
    ```
 
-5. **Configure environment variables:**
+6. **Configure environment variables:**
    ```bash
    cp env.example .env
    # Edit .env with your configuration
    ```
+
+## Python Packages & Dependencies
+
+### Core Dependencies
+
+**Web Framework:**
+- `flask>=3.0.0` - Web framework
+- `flask-cors>=4.0.0` - CORS support
+- `flask-socketio>=5.3.0` - WebSocket support
+- `python-socketio>=5.10.0` - Socket.IO implementation
+- `eventlet>=0.33.0` - Async networking library
+
+**Document Processing:**
+- `docling>=2.61.1` - Document conversion and OCR
+- `opencv-python-headless<4.11.0` - Image processing
+- `numpy<2` - Numerical operations
+
+**Code Parsing:**
+- `tree-sitter>=0.20.0` - Incremental parsing system
+- `tree-sitter-python>=0.20.0` - Python parser
+- `tree-sitter-typescript>=0.20.0` - TypeScript parser
+- `tree-sitter-javascript>=0.20.0` - JavaScript parser
+- `tree-sitter-java>=0.20.0` - Java parser
+- `tree-sitter-c>=0.20.0` - C parser
+- `tree-sitter-cpp>=0.20.0` - C++ parser
+- `tree-sitter-c-sharp>=0.20.0` - C# parser
+- `libcst>=1.1.0` - Concrete Syntax Tree for Python
+
+**AI & LLM:**
+- `langchain>=1.0.8` - LLM framework
+- `langchain-core>=1.1.0` - Core LangChain components
+- `langchain-text-splitters>=1.0.0` - Text splitting utilities
+- `langchain-openai>=1.0.3` - OpenAI integration
+
+**Database & Storage:**
+- `neo4j>=6.0.3` - Neo4j graph database driver
+- `qdrant-client>=1.16.0` - Vector database client (optional)
+
+**Git & GitHub:**
+- `gitpython>=3.1.40` - Git operations
+- `pygithub>=2.1.1` - GitHub API integration
+
+**Utilities:**
+- `python-dotenv>=1.0.0` - Environment variable management
+- `pydantic>=2.0.0` - Data validation
+- `jsonschema>=4.0.0` - JSON schema validation
+- `playwright>=1.40.0` - Browser automation for diagram rendering
+
+**Testing:**
+- `pytest>=7.4.0` - Testing framework
+
+### Node.js Dependencies
+
+- `ts-morph>=27.0.2` - TypeScript AST manipulation (for advanced TypeScript parsing)
 
 ### Environment Configuration
 
@@ -401,6 +489,7 @@ AGENT_APPROVAL_REQUIRED=true
 AGENT_AUTO_APPLY_LOW_RISK=false
 AGENT_MAX_RETRIES=2
 AGENT_TIMEOUT=3600
+CODE_EDITS_ENABLED=false  # If false, generates spec files instead
 
 # Git/GitHub
 GIT_USER_NAME=Agent
@@ -411,10 +500,42 @@ GITHUB_API_URL=https://api.github.com
 # Test Runner
 TEST_RUNNER_TIMEOUT=300
 USE_DOCKER_FOR_TESTS=false
+DOCKER_IMAGE_PREFIX=test-runner
 
-# PKG Cache
+# PKG Generation
+PKG_FAN_THRESHOLD=3
+PKG_INCLUDE_FEATURES=true
 PKG_CACHE_ENABLED=true
-PKG_CACHE_PATH=pkg.json
+
+# Security
+MAX_IMPACTED_FILES_FOR_AUTO_APPROVAL=5
+REQUIRE_HUMAN_APPROVAL_FOR_MIGRATIONS=true
+
+# Code Editing
+USE_AST_EDITING=true
+FUZZY_FILE_MATCHING_ENABLED=true
+FUZZY_MATCH_CONFIDENCE_THRESHOLD=0.8
+ENABLE_FILE_VALIDATION=true
+MAX_FIX_RETRIES=3
+AUTO_FIX_LINT=true
+INCLUDE_CODE_EXAMPLES=true
+FIX_ON_TEST_FAILURE=true
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=standard
+LOG_STRUCTURED=false
+LOG_LLM_PROMPTS=false
+
+# Neo4j
+NEO4J_BATCH_SIZE=1000
+NEO4J_MAX_RETRIES=3
+NEO4J_RETRY_DELAY=1.0
+EMBEDDING_DIMENSION=1536
+
+# File Processing
+MAX_FILE_SIZE=16777216  # 16MB
+SUPPORTED_LANGUAGES=python,typescript,javascript,java,c,cpp,csharp
 ```
 
 ### Neo4j Setup
@@ -511,6 +632,67 @@ WebSocket server status.
 }
 ```
 
+#### POST /clone-and-generate
+
+Clone a repository and generate PKG JSON.
+
+**Request:**
+- Method: `POST`
+- Content-Type: `application/json`
+- Body:
+```json
+{
+  "repo_url": "https://github.com/user/repo.git"
+}
+```
+- Query Parameters:
+  - `generate_summaries`: `true`/`false` (default: `false`) - Generate LLM summaries
+  - `fan_threshold`: Integer (default: `3`) - Fan-in threshold for filtering
+  - `include_features`: `true`/`false` (default: `true`) - Include feature groupings
+  - `format`: `pkg`/`legacy` (default: `pkg`) - Output format
+
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "project": {...},
+    "modules": [...],
+    "symbols": [...],
+    "endpoints": [...],
+    "edges": [...],
+    "features": [...]
+  },
+  "message": "PKG generated successfully for repo-name"
+}
+```
+
+**Features:**
+- Automatically forks repository if not owned by authenticated user
+- Checks for existing cloned repository before cloning
+- Validates git SHA for cache invalidation
+- Supports both PKG and legacy JSON formats
+
+#### GET /chunks
+
+Search stored document chunks (requires LangChain agents).
+
+**Request:**
+- Method: `GET`
+- Query Parameters:
+  - `q`: Search query string
+
+**Response:**
+```json
+{
+  "result": "Search results..."
+}
+```
+
+#### POST /api/cleanup/*
+
+Cleanup routes for temporary files and resources (see `routes/cleanup_routes.py`).
+
 ### WebSocket Events
 
 #### Client Events
@@ -532,7 +714,19 @@ WebSocket server status.
 ```json
 {
   "session_id": "session-uuid",
-  "plan_id": "plan-uuid"
+  "plan_id": "plan-uuid",
+  "codeEdits": true/false
+}
+```
+
+**approval_response**
+```json
+{
+  "session_id": "session-uuid",
+  "plan_id": "plan-uuid",
+  "approved": true/false,
+  "codeEdits": true/false,
+  "reason": "Optional rejection reason"
 }
 ```
 
@@ -577,6 +771,107 @@ WebSocket server status.
 }
 ```
 
+## How It Works
+
+### System Initialization
+
+1. **Flask Application Startup:**
+   - Loads configuration from `.env` or `config.yaml/json`
+   - Initializes logging (standard or structured JSON)
+   - Sets up CORS for cross-origin requests
+   - Initializes SocketIO for WebSocket support
+   - Registers route blueprints (PDF, cleanup, chat, MCP)
+   - Creates error handlers for common HTTP errors
+
+2. **Neo4j Connection:**
+   - Attempts connection with retry logic (exponential backoff)
+   - Creates indexes on first connection:
+     - Node indexes (Project, Module, Symbol, Endpoint, Feature, Package)
+     - Fulltext indexes for summaries
+     - Vector indexes for embeddings (Neo4j 5.x+)
+   - Falls back gracefully if Neo4j unavailable
+
+3. **Session Management:**
+   - In-memory session store (production: use Redis)
+   - Auto-generates session IDs on WebSocket connection
+   - Tracks: repo_url, repo_path, pkg_data, current_intent, current_plan
+
+### Request Processing Flow
+
+**REST API Requests:**
+```
+Client Request
+  → Flask Route Handler
+  → Service Layer (PDF/Parser/PKG)
+  → Agent/Processor Components
+  → Data Layer (Neo4j/File System)
+  → Response Formatter
+  → JSON Response
+```
+
+**WebSocket Requests:**
+```
+Client Connect
+  → SocketIO Handler
+  → Session Creation
+  → Connected Event (with session_id)
+  
+Client Message
+  → Chat Route Handler
+  → Agent Orchestrator
+  → Intent Router
+  → Route by Category
+  → Execute Workflow
+  → Stream Updates via SocketIO
+  → Final Response
+```
+
+### PKG Generation Process
+
+1. **File Collection:**
+   - Recursively scans repository directory
+   - Filters by supported file extensions
+   - Excludes common ignore patterns
+
+2. **Language Detection:**
+   - Maps file extensions to languages
+   - Initializes appropriate tree-sitter parser
+   - Handles multi-language projects
+
+3. **AST Parsing:**
+   - Parses each file to Abstract Syntax Tree
+   - Extracts definitions (functions, classes, etc.)
+   - Captures import statements
+   - Identifies endpoint decorators/routes
+
+4. **Normalization:**
+   - Converts AST nodes to standardized format
+   - Extracts signatures, visibility, types
+   - Builds module metadata
+
+5. **Relationship Extraction:**
+   - Resolves import statements
+   - Maps function/method calls
+   - Links endpoints to handlers
+   - Identifies inheritance/implementation
+
+6. **Metrics Calculation:**
+   - Fan-in: Count incoming dependencies
+   - Fan-out: Count outgoing dependencies
+   - Centrality: Graph-based importance score
+   - Complexity: Cyclomatic complexity
+
+7. **Feature Detection (optional):**
+   - Analyzes module structure
+   - Groups by directory patterns
+   - Identifies bounded contexts
+
+8. **PKG Assembly:**
+   - Combines all extracted data
+   - Applies fan_threshold filtering
+   - Generates summaries (if LLM available)
+   - Validates against schema
+
 ## Workflows & Flows
 
 ### PDF Processing Flow
@@ -615,19 +910,40 @@ WebSocket server status.
 ```
 1. Repository URL Provided
    ↓
-2. Check Cache (PKG JSON file)
-   ├─→ If exists & git SHA matches → Return cached PKG
+2. Auto-Fork Check (if GitHub token available)
+   ├─→ Parse owner/repo from URL
+   ├─→ Check if user owns repository
+   ├─→ Fork if needed (store fork_info)
+   └─→ Update repo_url to fork if forked
+   ↓
+3. Check Session Cache
+   ├─→ If PKG data exists in session → Return cached
    └─→ If not → Continue
    ↓
-3. Check Neo4j (if configured)
-   ├─→ If exists → Load from Neo4j
+4. Check Neo4j (if configured)
+   ├─→ Extract project_id from repo URL
+   ├─→ Query Neo4j for Package node
+   ├─→ If exists → Load PKG from Neo4j
    └─→ If not → Continue
    ↓
-4. Clone Repository (if not exists locally)
+5. Check File Cache (pkg.json)
+   ├─→ Check if pkg.json exists in repo_path
+   ├─→ Compare git SHA (current vs cached)
+   ├─→ If SHA matches → Return cached PKG
+   └─→ If SHA differs or missing → Continue
    ↓
-5. Detect Languages & Frameworks
+6. Clone Repository (if not exists locally)
+   ├─→ Extract repo name from URL
+   ├─→ Check cloned_repos/{repo_name}
+   ├─→ Clone if not exists
+   └─→ Configure git remotes (origin=fork, upstream=original)
    ↓
-6. Parse Files (multi-language tree-sitter)
+7. Detect Languages & Frameworks
+   ├─→ Scan file extensions
+   ├─→ Detect framework (NestJS, Spring Boot, ASP.NET, etc.)
+   └─→ Identify project structure
+   ↓
+8. Parse Files (multi-language tree-sitter)
    ├─→ Python → tree-sitter-python
    ├─→ TypeScript → tree-sitter-typescript
    ├─→ JavaScript → tree-sitter-javascript
@@ -635,38 +951,58 @@ WebSocket server status.
    ├─→ C/C++ → tree-sitter-c/cpp
    └─→ C# → tree-sitter-c-sharp
    ↓
-7. Extract Definitions
-   ├─→ Modules (files)
-   ├─→ Symbols (functions, classes, etc.)
-   ├─→ Endpoints (HTTP/RPC)
-   └─→ Relationships (imports, calls, etc.)
+9. Extract Definitions
+   ├─→ Modules (files with metadata: LOC, hash, kind tags)
+   ├─→ Symbols (functions, classes, interfaces, methods, variables, enums)
+   ├─→ Endpoints (HTTP/RPC with method, path, handler)
+   └─→ Relationships (imports, calls, implements, extends, routes-to, uses-db, tests)
    ↓
-8. Build Relationship Graph
-   ├─→ Resolve imports
-   ├─→ Map calls
-   ├─→ Link endpoints to handlers
-   └─→ Calculate metrics (fan-in, fan-out, centrality, complexity)
+10. Build Relationship Graph
+    ├─→ Resolve imports (cross-file dependencies)
+    ├─→ Map function/method calls
+    ├─→ Link endpoints to handler functions
+    ├─→ Calculate metrics:
+    │   ├─→ Fan-in (incoming dependencies)
+    │   ├─→ Fan-out (outgoing dependencies)
+    │   ├─→ Centrality (importance in graph)
+    │   └─→ Complexity (cyclomatic complexity)
+    └─→ Build edge list
    ↓
-9. Generate Features (optional)
-   ├─→ Detect feature boundaries
-   └─→ Group modules by feature
+11. Generate Features (optional, if include_features=true)
+    ├─→ Detect feature boundaries
+    ├─→ Group modules by feature/bounded context
+    └─→ Create feature nodes
    ↓
-10. Generate PKG JSON
-    ├─→ Project metadata
-    ├─→ Modules array
-    ├─→ Symbols array
+12. Generate PKG JSON
+    ├─→ Project metadata (id, name, rootPath, languages, gitSha, summary)
+    ├─→ Modules array (with summaries if LLM available)
+    ├─→ Symbols array (filtered by fan_threshold)
     ├─→ Endpoints array
-    ├─→ Edges array
+    ├─→ Edges array (relationships)
     └─→ Features array (optional)
-    ↓
-11. Store in Neo4j (if configured)
-    ├─→ Batch insert nodes
+   ↓
+13. Store in Neo4j (if configured)
+    ├─→ Create/update Project node
+    ├─→ Create Package node (versioned snapshot)
+    ├─→ Batch insert Module nodes
+    ├─→ Batch insert Symbol nodes
+    ├─→ Batch insert Endpoint nodes
+    ├─→ Batch insert Feature nodes
     ├─→ Batch insert relationships
-    └─→ Create indexes
-    ↓
-12. Cache PKG JSON (file system)
-    ↓
-13. Return PKG Data
+    ├─→ Create indexes (if not exist)
+    └─→ Create fulltext/vector indexes (if supported)
+   ↓
+14. Cache PKG JSON (file system)
+    ├─→ Save to {repo_path}/pkg.json
+    └─→ Include git SHA for validation
+   ↓
+15. Store in Session
+    ├─→ Store repo_url (original and fork)
+    ├─→ Store repo_path
+    ├─→ Store pkg_data
+    └─→ Store fork_info (if applicable)
+   ↓
+16. Return PKG Data
 ```
 
 ### Agent Workflow Flow
@@ -678,63 +1014,85 @@ WebSocket server status.
    ├─→ Extract intent category (query/diagram/code_change)
    ├─→ Extract intent type
    ├─→ Extract description, risk, constraints
-   └─→ Extract target modules
+   ├─→ Extract target modules
+   └─→ Extract target files
    ↓
 3. Route by Intent Category
-   ├─→ Informational Query → Query Handler
-   ├─→ Diagram Request → Diagram Generator
+   ├─→ Informational Query → Query Handler → Return Answer
+   ├─→ Diagram Request → Diagram Generator → Return Diagram
    └─→ Code Change → Continue workflow
    ↓
 4. Ensure Repository Loaded
-   ├─→ Check session cache
-   ├─→ Check Neo4j
-   ├─→ Check file cache
-   └─→ Clone & generate if needed
+   ├─→ Check session cache (PKG data)
+   ├─→ Check Neo4j (by project_id)
+   ├─→ Check file cache (pkg.json with git SHA validation)
+   ├─→ Auto-fork repository if needed (GitHub token available)
+   ├─→ Clone repository (if not exists)
+   └─→ Generate PKG (if not cached)
    ↓
 5. PKG Query Engine
-   ├─→ Query impacted modules
-   ├─→ Query dependencies
-   └─→ Query related symbols/endpoints
+   ├─→ Query impacted modules (by tags, filenames)
+   ├─→ Query dependencies (imports, calls)
+   ├─→ Query related symbols/endpoints
+   └─→ Fuzzy file matching (if enabled)
    ↓
 6. Impact Analyzer
    ├─→ Assess change impact
    ├─→ Calculate risk score
    ├─→ Identify affected modules
-   └─→ Determine approval requirement
+   ├─→ Determine approval requirement
+   └─→ Check auto-approval thresholds
    ↓
 7. Planner
    ├─→ Generate step-by-step plan
-   ├─→ Create task list
-   ├─→ Specify files to modify
-   └─→ Define test expectations
+   ├─→ Create task list with files, changes, tests
+   ├─→ Validate file existence (with fuzzy matching)
+   ├─→ Define test expectations
+   └─→ Generate plan_id
    ↓
 8. Human Approval (if required)
-   ├─→ Stream approval request
-   ├─→ Wait for user approval
+   ├─→ Stream approval_request event
+   ├─→ Wait for approve_plan/approval_response
+   ├─→ Check codeEdits flag (spec generation vs execution)
    └─→ Continue on approval
    ↓
-9. Code Editor
-   ├─→ Create git branch
-   ├─→ Apply code changes
-   └─→ Generate diff
+9a. If codeEdits=false: Generate Spec File
+    ├─→ Create specs/ directory
+    ├─→ Generate markdown specification
+    ├─→ Emit spec_file_generated event (MCP namespace)
+    └─→ Return spec file path
+   ↓
+9b. If codeEdits=true: Code Editor
+    ├─→ Create git branch (feat/agent-{plan_id})
+    ├─→ Apply code changes (AST-aware editing)
+    ├─→ Validate code (linting, syntax)
+    ├─→ Iterative fix on errors (if enabled)
+    └─→ Generate diff
    ↓
 10. Test Runner
     ├─→ Run unit tests
     ├─→ Run integration tests
-    └─→ Run e2e tests (if applicable)
-    ↓
+    ├─→ Run e2e tests (if applicable)
+    └─→ Test failure feedback loop (if enabled)
+       ├─→ Extract failure messages
+       ├─→ Fix code iteratively
+       └─→ Re-run tests (max retries)
+   ↓
 11. Verifier
     ├─→ Compare test results to expectations
     ├─→ Verify acceptance criteria
     └─→ Determine PR readiness
-    ↓
+   ↓
 12. PR Creator (if verification passes)
     ├─→ Create git commit
-    ├─→ Push branch
-    ├─→ Open pull request
-    └─→ Generate PR description
-    ↓
+    ├─→ Push branch to fork
+    ├─→ Open pull request (to original repo)
+    └─→ Generate PR description with summary
+   ↓
 13. Stream Summary to User
+    ├─→ Final summary event
+    ├─→ PR URL and details
+    └─→ Complete workflow status
 ```
 
 ### Query Handling Flow
@@ -809,6 +1167,64 @@ WebSocket server status.
    └─→ Interactive HTML (optional)
 ```
 
+## Additional Capabilities
+
+### Code Editing Features
+
+**AST-Aware Editing:**
+- Uses `libcst` for Python AST transformations
+- Preserves code formatting and structure
+- Safer than text-based replacements
+
+**Iterative Fixing:**
+- Automatically fixes linting errors (if `AUTO_FIX_LINT=true`)
+- Fixes code based on test failure messages (if `FIX_ON_TEST_FAILURE=true`)
+- Maximum retry attempts configurable (`MAX_FIX_RETRIES`)
+- Includes code examples from PKG in LLM prompts
+
+**File Validation:**
+- Validates file existence before planning
+- Fuzzy file matching with confidence threshold
+- Suggests similar files when exact match not found
+- Streams validation results to client
+
+**Code Validation:**
+- Syntax validation after edits
+- Linting with auto-fix support
+- Type checking (where applicable)
+- Error reporting with line numbers
+
+### Repository Management
+
+**Auto-Forking:**
+- Automatically detects if repository is owned by authenticated user
+- Forks repository if needed (requires GitHub token)
+- Configures git remotes (origin=fork, upstream=original)
+- Stores fork information in session
+
+**Caching Strategy:**
+1. **Session Cache**: PKG data stored in memory per session
+2. **Neo4j Cache**: Persistent storage with versioning
+3. **File Cache**: `pkg.json` with git SHA validation
+4. **Priority**: Session → Neo4j → File Cache → Regenerate
+
+### Spec File Generation
+
+When `CODE_EDITS_ENABLED=false`, the system generates markdown specification files instead of editing code:
+
+- Creates `specs/` directory in repository
+- Generates detailed change specifications
+- Includes task breakdown, file changes, test requirements
+- Emits MCP events for external tooling integration
+- Returns spec file path for review
+
+### MCP (Model Context Protocol) Integration
+
+- Separate WebSocket namespace (`/mcp`)
+- Spec file generation notifications
+- Integration with external MCP-compatible tools
+- Event-driven architecture for tooling workflows
+
 ## Project Structure
 
 ```
@@ -819,19 +1235,21 @@ py-processor/
 ├── env.example                  # Environment variable template
 │
 ├── agents/                      # AI Agent Components
-│   ├── intent_router.py         # Intent extraction
-│   ├── query_handler.py         # Query answering
-│   ├── impact_analyzer.py       # Impact assessment
-│   ├── planner.py               # Plan generation
-│   ├── code_editor.py           # Code editing
-│   ├── test_runner.py           # Test execution
-│   ├── verifier.py              # Change verification
-│   ├── pr_creator.py            # PR creation
-│   ├── diagram_generator.py     # Diagram generation
-│   ├── extraction_agent.py     # Data extraction
-│   ├── storing_agent.py         # Data storage
-│   ├── chunking_agent.py        # Document chunking
-│   └── verifier.py              # Verification logic
+│   ├── intent_router.py         # Intent extraction and routing
+│   ├── query_handler.py         # Query answering with LLM
+│   ├── impact_analyzer.py       # Impact assessment and risk analysis
+│   ├── planner.py               # Plan generation with file validation
+│   ├── code_editor.py           # Code editing with AST-aware transformations
+│   ├── code_validator.py        # Code validation and linting
+│   ├── code_context_analyzer.py # Context analysis for code changes
+│   ├── test_runner.py           # Test execution with feedback loops
+│   ├── verifier.py              # Change verification and acceptance
+│   ├── pr_creator.py            # PR creation with auto-forking
+│   ├── diagram_generator.py     # Diagram generation (Mermaid)
+│   ├── extraction_agent.py     # Data extraction (LangChain)
+│   ├── storing_agent.py         # Data storage (LangChain + Qdrant)
+│   ├── chunking_agent.py        # Document chunking (LangChain)
+│   └── ast_transformers.py     # AST transformation utilities
 │
 ├── code_parser/                 # Code Parsing
 │   ├── multi_parser.py          # Multi-language parser
@@ -857,12 +1275,16 @@ py-processor/
 │
 ├── routes/                      # API Routes
 │   ├── pdf_routes.py            # PDF processing endpoints
-│   └── chat_routes.py           # WebSocket chat routes
+│   ├── chat_routes.py           # WebSocket chat routes
+│   ├── cleanup_routes.py        # Cleanup and resource management
+│   └── mcp_routes.py            # MCP (Model Context Protocol) routes
 │
 ├── utils/                       # Utilities
-│   ├── file_utils.py            # File operations
+│   ├── config.py                # Centralized configuration management
+│   ├── file_utils.py            # File operations and collection
 │   ├── response_formatter.py    # Response formatting
-│   └── schema_validator.py     # Schema validation
+│   ├── schema_validator.py      # Schema validation
+│   └── logging_config.py        # Logging configuration
 │
 ├── processors/                  # Data Processors
 │   └── qdrant.py                # Qdrant vector store (optional)
@@ -889,6 +1311,12 @@ See `env.example` for complete configuration options.
 - `PKG_CACHE_ENABLED`: Enable PKG file caching (default: `true`)
 - `USE_DOCKER_FOR_TESTS`: Use Docker for test execution (default: `false`)
 - `AGENT_AUTO_APPLY_LOW_RISK`: Auto-apply low-risk changes (default: `false`)
+- `CODE_EDITS_ENABLED`: Enable actual code edits vs spec generation (default: `false`)
+- `USE_AST_EDITING`: Use AST-aware code editing (default: `true`)
+- `FUZZY_FILE_MATCHING_ENABLED`: Enable fuzzy file matching (default: `true`)
+- `AUTO_FIX_LINT`: Automatically fix linting errors (default: `true`)
+- `FIX_ON_TEST_FAILURE`: Automatically fix code when tests fail (default: `true`)
+- `PKG_INCLUDE_FEATURES`: Include feature groupings in PKG (default: `true`)
 
 ## Development
 
@@ -968,10 +1396,14 @@ black .
 ## Performance Considerations
 
 - **OCR**: Enabling OCR significantly increases processing time but enables scanned document support
-- **PKG Generation**: Large repositories may take several minutes to parse; caching helps
-- **Neo4j**: Batch operations are used for efficient storage of large codebases
-- **Diagram Rendering**: Playwright rendering is faster but requires local installation
+- **PKG Generation**: Large repositories may take several minutes to parse; caching with git SHA validation helps avoid regeneration
+- **Neo4j**: Batch operations (configurable batch size) are used for efficient storage of large codebases
+- **Diagram Rendering**: Playwright rendering is faster but requires local installation; mermaid.ink API is alternative
 - **Agent Operations**: Complex changes may take several minutes; real-time streaming keeps users informed
+- **Session Caching**: PKG data cached in session memory for faster subsequent queries
+- **File Cache**: PKG JSON files cached on disk with git SHA validation
+- **Neo4j Caching**: Diagram and query results cached in Neo4j with TTL
+- **Iterative Fixing**: Code fixes may require multiple iterations; max retries configurable
 
 ## Error Handling
 

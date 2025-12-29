@@ -101,6 +101,9 @@ class Config:
         self._github_token = os.getenv("GITHUB_TOKEN", "")
         self._github_api_url = os.getenv("GITHUB_API_URL", "https://api.github.com")
         
+        # Portfolio Service Configuration
+        self._portfolio_service_callback_url = os.getenv("PORTFOLIO_SERVICE_CALLBACK_URL", "")
+        
         # Test Runner Configuration
         self._test_runner_timeout = int(os.getenv("TEST_RUNNER_TIMEOUT", "300"))
         self._use_docker_for_tests = os.getenv("USE_DOCKER_FOR_TESTS", "false").lower() == "true"
@@ -479,6 +482,12 @@ class Config:
     def github_api_url(self) -> str:
         """GitHub API base URL."""
         return self._github_api_url
+    
+    # Portfolio Service Properties
+    @property
+    def portfolio_service_callback_url(self) -> str:
+        """Portfolio service callback URL for job completion notifications."""
+        return self._portfolio_service_callback_url
     
     # Test Runner Properties
     @property
